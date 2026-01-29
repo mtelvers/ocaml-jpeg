@@ -29,20 +29,30 @@ let has_more reader =
 (** Get current byte position *)
 let byte_position reader = reader.pos
 
-(** Read next byte, handling byte stuffing (FF00 -> FF) *)
-let read_byte_internal reader =
+(** Read next byte, handling byte stuffing (FF00 -> FF) and RST markers *)
+let rec read_byte_internal reader =
   if reader.pos >= Bytes.length reader.data then raise End_of_file;
   let b = Bytes.get_uint8 reader.data reader.pos in
   reader.pos <- reader.pos + 1;
   (* Handle byte stuffing: FF followed by 00 means just FF *)
-  (if b = 0xFF && reader.pos < Bytes.length reader.data then
-     match Bytes.get_uint8 reader.data reader.pos with
-     | 0x00 -> reader.pos <- reader.pos + 1 (* skip the stuffed 00 byte *)
-     | c when c >= 0xD0 && c <= 0xD7 ->
-         reader.pos <- reader.pos + 1 (* RST marker - skip it *)
-     | 0xFF -> () (* Multiple FF bytes - keep reading *)
-     | _ -> reader.pos <- reader.pos - 1 (* Marker - don't consume *));
-  b
+  if b = 0xFF && reader.pos < Bytes.length reader.data then (
+    match Bytes.get_uint8 reader.data reader.pos with
+    | 0x00 ->
+        reader.pos <- reader.pos + 1;
+        (* skip the stuffed 00 byte *)
+        b
+    | c when c >= 0xD0 && c <= 0xD7 ->
+        (* RST marker - skip both FF and marker byte, then read next actual byte *)
+        reader.pos <- reader.pos + 1;
+        read_byte_internal reader
+    | 0xFF ->
+        (* Multiple FF bytes - this FF is padding, continue *)
+        b
+    | _ ->
+        (* Other marker - back up so we don't consume it *)
+        reader.pos <- reader.pos - 1;
+        b)
+  else b
 
 (** Read a single bit (returns 0 or 1) *)
 let read_bit reader =
@@ -150,3 +160,9 @@ let write_raw_byte writer b =
 let write_raw_bytes writer data =
   flush_writer writer;
   Buffer.add_bytes writer.buffer data
+
+(** Write a restart marker (RST0-RST7) *)
+let write_rst_marker writer counter =
+  flush_writer writer;
+  Buffer.add_uint8 writer.buffer 0xFF;
+  Buffer.add_uint8 writer.buffer (0xD0 lor (counter land 0x07))

@@ -30,11 +30,16 @@ type color_mode = Color | Grayscale
 (** Encoding modes *)
 type encoding_mode = Baseline | Progressive
 
+(** Bit precision for sample values *)
+type precision = Precision_8 | Precision_12
+
 type encode_options = {
   quality : int;
   subsampling : subsampling;
   color_mode : color_mode;
   encoding_mode : encoding_mode;
+  restart_interval : int;  (** MCUs between RST markers, 0 = disabled *)
+  precision : precision;  (** Sample precision: 8-bit or 12-bit *)
 }
 (** Encoding options *)
 
@@ -44,6 +49,8 @@ let default_encode_options =
     subsampling = Sub_420;
     color_mode = Color;
     encoding_mode = Baseline;
+    restart_interval = 0;
+    precision = Precision_8;
   }
 
 type decode_state = {
@@ -666,8 +673,8 @@ let read_bytes data =
   match state.frame with
   | None -> failwith "No SOF marker found"
   | Some frame ->
-      if frame.Markers.precision <> 8 then
-        failwith "Only 8-bit precision is supported";
+      if frame.Markers.precision <> 8 && frame.Markers.precision <> 12 then
+        failwith "Only 8-bit and 12-bit precision supported";
 
       let pixels =
         match frame.Markers.frame_type with
@@ -895,14 +902,26 @@ let encode_ac_first writer ac_table coeffs ss se al =
 (** Encode a progressive DC scan *)
 let encode_progressive_dc_scan coefficients h_blocks num_blocks dc_tables
     scan_spec mcu_h mcu_v y_h_sampling y_v_sampling cb_h_sampling cb_v_sampling
-    =
+    ~restart_interval =
   let writer = Bitstream.create_writer () in
   let al = scan_spec.al in
   let num_components = List.length scan_spec.components in
   let prev_dc = Array.make num_components 0 in
+  let mcu_count = ref 0 in
+  let rst_counter = ref 0 in
 
   for mcu_y = 0 to mcu_v - 1 do
     for mcu_x = 0 to mcu_h - 1 do
+      (* Check for restart marker insertion *)
+      if
+        restart_interval > 0 && !mcu_count > 0
+        && !mcu_count mod restart_interval = 0
+      then begin
+        Bitstream.write_rst_marker writer !rst_counter;
+        rst_counter := (!rst_counter + 1) land 0x07;
+        Array.fill prev_dc 0 num_components 0
+      end;
+
       List.iteri
         (fun sci ci ->
           let dc_table = dc_tables.(if ci = 0 then 0 else 1) in
@@ -921,7 +940,8 @@ let encode_progressive_dc_scan coefficients h_blocks num_blocks dc_tables
               end
             done
           done)
-        scan_spec.components
+        scan_spec.components;
+      incr mcu_count
     done
   done;
 
@@ -931,14 +951,25 @@ let encode_progressive_dc_scan coefficients h_blocks num_blocks dc_tables
 (** Encode a progressive AC scan *)
 let encode_progressive_ac_scan coefficients h_blocks num_blocks ac_tables
     scan_spec mcu_h mcu_v y_h_sampling y_v_sampling cb_h_sampling cb_v_sampling
-    =
+    ~restart_interval =
   let writer = Bitstream.create_writer () in
   let ss = scan_spec.ss in
   let se = scan_spec.se in
   let al = scan_spec.al in
+  let mcu_count = ref 0 in
+  let rst_counter = ref 0 in
 
   for mcu_y = 0 to mcu_v - 1 do
     for mcu_x = 0 to mcu_h - 1 do
+      (* Check for restart marker insertion *)
+      if
+        restart_interval > 0 && !mcu_count > 0
+        && !mcu_count mod restart_interval = 0
+      then begin
+        Bitstream.write_rst_marker writer !rst_counter;
+        rst_counter := (!rst_counter + 1) land 0x07
+      end;
+
       List.iter
         (fun ci ->
           let ac_table = ac_tables.(if ci = 0 then 0 else 1) in
@@ -956,7 +987,8 @@ let encode_progressive_ac_scan coefficients h_blocks num_blocks ac_tables
               end
             done
           done)
-        scan_spec.components
+        scan_spec.components;
+      incr mcu_count
     done
   done;
 
@@ -1116,14 +1148,34 @@ let write_bytes_with_options options image =
             transform_and_quantize block quant_table))
   in
 
+  (* Get precision value *)
+  let precision_value =
+    match options.precision with Precision_8 -> 8 | Precision_12 -> 12
+  in
+  let quant_precision = if precision_value = 8 then 0 else 1 in
+
   match options.encoding_mode with
   | Baseline ->
       (* Baseline encoding: single scan *)
       let writer = Bitstream.create_writer () in
       let prev_dc = Array.make num_components 0 in
+      let mcu_count = ref 0 in
+      let rst_counter = ref 0 in
+      let restart_interval = options.restart_interval in
 
       for mcu_y = 0 to mcu_v - 1 do
         for mcu_x = 0 to mcu_h - 1 do
+          (* Check for restart marker insertion *)
+          if
+            restart_interval > 0 && !mcu_count > 0
+            && !mcu_count mod restart_interval = 0
+          then begin
+            Bitstream.write_rst_marker writer !rst_counter;
+            rst_counter := (!rst_counter + 1) land 0x07;
+            (* Reset DC predictors *)
+            Array.fill prev_dc 0 num_components 0
+          end;
+
           for ci = 0 to num_components - 1 do
             let dc_table = if ci = 0 then dc_lum else dc_chr in
             let ac_table = if ci = 0 then ac_lum else ac_chr in
@@ -1143,7 +1195,8 @@ let write_bytes_with_options options image =
                 end
               done
             done
-          done
+          done;
+          incr mcu_count
         done
       done;
 
@@ -1183,20 +1236,37 @@ let write_bytes_with_options options image =
         @ [
             Markers.DQT
               (if is_grayscale then
-                 [ { Markers.table_id = 0; precision = 0; values = lum_quant } ]
+                 [
+                   {
+                     Markers.table_id = 0;
+                     precision = quant_precision;
+                     values = lum_quant;
+                   };
+                 ]
                else
                  [
-                   { Markers.table_id = 0; precision = 0; values = lum_quant };
-                   { Markers.table_id = 1; precision = 0; values = chr_quant };
+                   {
+                     Markers.table_id = 0;
+                     precision = quant_precision;
+                     values = lum_quant;
+                   };
+                   {
+                     Markers.table_id = 1;
+                     precision = quant_precision;
+                     values = chr_quant;
+                   };
                  ]);
             Markers.SOF0
               {
                 frame_type = Markers.Baseline;
-                precision = 8;
+                precision = precision_value;
                 height;
                 width;
                 components = frame_components;
               };
+          ]
+        @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
+        @ [
             Markers.DHT
               (if is_grayscale then
                  [
@@ -1254,6 +1324,7 @@ let write_bytes_with_options options image =
       in
       let dc_tables = [| dc_lum; dc_chr |] in
       let ac_tables = [| ac_lum; ac_chr |] in
+      let restart_interval = options.restart_interval in
 
       (* Build initial markers *)
       let initial_markers =
@@ -1276,20 +1347,37 @@ let write_bytes_with_options options image =
         @ [
             Markers.DQT
               (if is_grayscale then
-                 [ { Markers.table_id = 0; precision = 0; values = lum_quant } ]
+                 [
+                   {
+                     Markers.table_id = 0;
+                     precision = quant_precision;
+                     values = lum_quant;
+                   };
+                 ]
                else
                  [
-                   { Markers.table_id = 0; precision = 0; values = lum_quant };
-                   { Markers.table_id = 1; precision = 0; values = chr_quant };
+                   {
+                     Markers.table_id = 0;
+                     precision = quant_precision;
+                     values = lum_quant;
+                   };
+                   {
+                     Markers.table_id = 1;
+                     precision = quant_precision;
+                     values = chr_quant;
+                   };
                  ]);
             Markers.SOF2
               {
                 frame_type = Markers.Progressive;
-                precision = 8;
+                precision = precision_value;
                 height;
                 width;
                 components = frame_components;
               };
+          ]
+        @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
+        @ [
             (* All Huffman tables upfront *)
             Markers.DHT
               (if is_grayscale then
@@ -1346,11 +1434,11 @@ let write_bytes_with_options options image =
               if is_dc_scan then
                 encode_progressive_dc_scan coefficients h_blocks num_blocks
                   dc_tables scan_spec mcu_h mcu_v y_h_sampling y_v_sampling
-                  cb_h_sampling cb_v_sampling
+                  cb_h_sampling cb_v_sampling ~restart_interval
               else
                 encode_progressive_ac_scan coefficients h_blocks num_blocks
                   ac_tables scan_spec mcu_h mcu_v y_h_sampling y_v_sampling
-                  cb_h_sampling cb_v_sampling
+                  cb_h_sampling cb_v_sampling ~restart_interval
             in
             let scan_components =
               Array.of_list

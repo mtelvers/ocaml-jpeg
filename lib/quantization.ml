@@ -230,6 +230,19 @@ let luminance_table quality = scale_table std_luminance_table quality
 (** Get chrominance table for given quality *)
 let chrominance_table quality = scale_table std_chrominance_table quality
 
+(** Scale a quantization table for 12-bit precision (multiply by 16) *)
+let scale_table_12bit table = Array.map (fun v -> min 65535 (v * 16)) table
+
+(** Get luminance table for given quality and precision *)
+let luminance_table_precision ~precision quality =
+  let table = luminance_table quality in
+  if precision = 12 then scale_table_12bit table else table
+
+(** Get chrominance table for given quality and precision *)
+let chrominance_table_precision ~precision quality =
+  let table = chrominance_table quality in
+  if precision = 12 then scale_table_12bit table else table
+
 (** Quantize a DCT block (input: 64 floats, output: 64 ints in zig-zag order) *)
 let quantize block table =
   Array.init 64 (fun i ->

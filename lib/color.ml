@@ -6,6 +6,20 @@ let clamp v = max 0 (min 255 v)
 (** Clamp float to 0-255 and convert to int *)
 let clamp_float v = max 0 (min 255 (int_of_float (v +. 0.5)))
 
+(** Maximum value for given precision (8-bit: 255, 12-bit: 4095) *)
+let max_value_for_precision precision = if precision = 8 then 255 else 4095
+
+(** Mid value for given precision (8-bit: 128, 12-bit: 2048) *)
+let mid_value_for_precision precision = if precision = 8 then 128 else 2048
+
+(** Clamp value to valid range for given precision *)
+let clamp_precision precision v =
+  max 0 (min (max_value_for_precision precision) v)
+
+(** Clamp float to valid range for given precision *)
+let clamp_float_precision precision v =
+  max 0 (min (max_value_for_precision precision) (int_of_float (v +. 0.5)))
+
 (** Convert RGB to YCbCr Y = 0.299*R + 0.587*G + 0.114*B Cb = -0.169*R - 0.331*G
     \+ 0.500*B + 128 Cr = 0.500*R - 0.419*G - 0.081*B + 128 *)
 let rgb_to_ycbcr r g b =
@@ -28,6 +42,47 @@ let ycbcr_to_rgb y cb cr =
   let b = yf +. (1.772 *. cbf) in
   (clamp_float r, clamp_float g, clamp_float b)
 
+(** Convert RGB to YCbCr with given precision (8-bit or 12-bit). For 12-bit,
+    input values are 0-4095 and output uses mid=2048. *)
+let rgb_to_ycbcr_precision precision r g b =
+  let max_val = Float.of_int (max_value_for_precision precision) in
+  let mid = Float.of_int (mid_value_for_precision precision) in
+  (* Normalize to 0-1 range *)
+  let rf = Float.of_int r /. max_val in
+  let gf = Float.of_int g /. max_val in
+  let bf = Float.of_int b /. max_val in
+  (* YCbCr conversion *)
+  let y = ((0.299 *. rf) +. (0.587 *. gf) +. (0.114 *. bf)) *. max_val in
+  let cb =
+    (((-0.168736 *. rf) -. (0.331264 *. gf) +. (0.5 *. bf)) *. max_val) +. mid
+  in
+  let cr =
+    (((0.5 *. rf) -. (0.418688 *. gf) -. (0.081312 *. bf)) *. max_val) +. mid
+  in
+  ( clamp_float_precision precision y,
+    clamp_float_precision precision cb,
+    clamp_float_precision precision cr )
+
+(** Convert YCbCr to RGB with given precision *)
+let ycbcr_to_rgb_precision precision y cb cr =
+  let max_val = Float.of_int (max_value_for_precision precision) in
+  let mid = Float.of_int (mid_value_for_precision precision) in
+  let yf = Float.of_int y in
+  let cbf = Float.of_int cb -. mid in
+  let crf = Float.of_int cr -. mid in
+  (* Scale factors are the same, but we work in the precision's range *)
+  let scale = max_val /. 255.0 in
+  let r = yf +. (1.402 *. crf /. scale *. scale) in
+  let g =
+    yf
+    -. (0.344136 *. cbf /. scale *. scale)
+    -. (0.714136 *. crf /. scale *. scale)
+  in
+  let b = yf +. (1.772 *. cbf /. scale *. scale) in
+  ( clamp_float_precision precision r,
+    clamp_float_precision precision g,
+    clamp_float_precision precision b )
+
 (** Level shift: subtract 128 (for encoding, before DCT) *)
 let level_shift_down value = value - 128
 
@@ -41,6 +96,27 @@ let level_shift_block_down block =
 (** Level shift a block of samples (add 128) *)
 let level_shift_block_up block =
   Array.map (fun v -> clamp (int_of_float (v +. 128.5))) block
+
+(** Level shift with precision: subtract mid value (8-bit: 128, 12-bit: 2048) *)
+let level_shift_down_precision precision value =
+  value - mid_value_for_precision precision
+
+(** Level shift with precision: add mid value *)
+let level_shift_up_precision precision value =
+  value + mid_value_for_precision precision
+
+(** Level shift a block with precision (subtract mid value) *)
+let level_shift_block_down_precision precision block =
+  let mid = Float.of_int (mid_value_for_precision precision) in
+  Array.map (fun v -> Float.of_int v -. mid) block
+
+(** Level shift a block with precision (add mid value and clamp) *)
+let level_shift_block_up_precision precision block =
+  let mid = Float.of_int (mid_value_for_precision precision) in
+  let max_val = max_value_for_precision precision in
+  Array.map
+    (fun v -> max 0 (min max_val (int_of_float (v +. mid +. 0.5))))
+    block
 
 (** Convert entire RGB buffer to YCbCr components Input: RGB24 array
     (R,G,B,R,G,B,...) Output: (Y array, Cb array, Cr array) *)

@@ -469,6 +469,8 @@ let test_options_combinations () =
                   subsampling = sub;
                   color_mode = color;
                   encoding_mode = enc;
+                  restart_interval = 0;
+                  precision = Jpeg.Precision_8;
                 }
               in
               let data = Jpeg.write_bytes_with_options options image in
@@ -534,6 +536,8 @@ let test_progressive_grayscale () =
       subsampling = Jpeg.Sub_444;
       color_mode = Jpeg.Grayscale;
       encoding_mode = Jpeg.Progressive;
+      restart_interval = 0;
+      precision = Jpeg.Precision_8;
     }
   in
   let data = Jpeg.write_bytes_with_options options image in
@@ -549,6 +553,168 @@ let test_progressive_grayscale () =
 
   let decoded = Jpeg.read_bytes data in
   Alcotest.(check int) "Progressive grayscale width" width decoded.Jpeg.width
+
+(** Test restart interval encoding *)
+let test_restart_interval_encoding () =
+  let width = 32 in
+  let height = 32 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i * 7 mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Encode with restart interval *)
+  let options =
+    {
+      Jpeg.default_encode_options with
+      restart_interval = 2;
+      (* RST every 2 MCUs *)
+    }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Parse markers to verify DRI present *)
+  let markers = Markers.parse_markers data in
+  let has_dri =
+    List.exists
+      (fun m -> match m with Markers.DRI _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has DRI marker" true has_dri;
+
+  (* Verify we can decode it *)
+  let decoded = Jpeg.read_bytes data in
+  Alcotest.(check int) "Decoded width" width decoded.Jpeg.width;
+  Alcotest.(check int) "Decoded height" height decoded.Jpeg.height
+
+(** Test restart interval roundtrip *)
+let test_restart_roundtrip () =
+  let width = 64 in
+  let height = 64 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx (x * 4);
+      Bigarray.Array1.set pixels (idx + 1) (y * 4);
+      Bigarray.Array1.set pixels (idx + 2) 128
+    done
+  done;
+  let original = Jpeg.create_image width height pixels in
+
+  (* Encode with restart interval *)
+  let options =
+    { Jpeg.default_encode_options with restart_interval = 5; quality = 95 }
+  in
+  let data = Jpeg.write_bytes_with_options options original in
+  let decoded = Jpeg.read_bytes data in
+
+  (* Verify similar pixels *)
+  let max_error = ref 0 in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let r1, g1, b1 = Jpeg.get_pixel original x y in
+      let r2, g2, b2 = Jpeg.get_pixel decoded x y in
+      let err = max (abs (r1 - r2)) (max (abs (g1 - g2)) (abs (b1 - b2))) in
+      if err > !max_error then max_error := err
+    done
+  done;
+  Alcotest.(check bool) "Restart roundtrip error < 30" true (!max_error < 30)
+
+(** Test progressive with restart markers *)
+let test_progressive_with_restart () =
+  let width = 32 in
+  let height = 32 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  let options =
+    {
+      Jpeg.default_encode_options with
+      encoding_mode = Jpeg.Progressive;
+      restart_interval = 3;
+    }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Verify has both SOF2 and DRI *)
+  let markers = Markers.parse_markers data in
+  let has_sof2 =
+    List.exists
+      (fun m -> match m with Markers.SOF2 _ -> true | _ -> false)
+      markers
+  in
+  let has_dri =
+    List.exists
+      (fun m -> match m with Markers.DRI _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has SOF2" true has_sof2;
+  Alcotest.(check bool) "Has DRI" true has_dri;
+
+  let decoded = Jpeg.read_bytes data in
+  Alcotest.(check int) "Progressive+RST width" width decoded.Jpeg.width
+
+(** Test 12-bit precision encoding *)
+let test_12bit_precision () =
+  let width = 16 in
+  let height = 16 in
+
+  (* Create 8-bit image - library will handle precision internally *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  let options =
+    { Jpeg.default_encode_options with precision = Jpeg.Precision_12 }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Verify SOF has precision=12 *)
+  let markers = Markers.parse_markers data in
+  let frame =
+    List.find_map
+      (fun m -> match m with Markers.SOF0 f -> Some f | _ -> None)
+      markers
+  in
+  match frame with
+  | None -> Alcotest.fail "No SOF0 marker found"
+  | Some f -> Alcotest.(check int) "12-bit precision" 12 f.Markers.precision
+
+(** Test precision color conversion *)
+let test_precision_color_conversion () =
+  (* Test 8-bit precision *)
+  let y8, cb8, cr8 = Color.rgb_to_ycbcr_precision 8 255 128 64 in
+  Alcotest.(check bool) "Y in 8-bit range" true (y8 >= 0 && y8 <= 255);
+  Alcotest.(check bool) "Cb in 8-bit range" true (cb8 >= 0 && cb8 <= 255);
+  Alcotest.(check bool) "Cr in 8-bit range" true (cr8 >= 0 && cr8 <= 255);
+
+  (* Test 12-bit precision *)
+  let y12, cb12, cr12 = Color.rgb_to_ycbcr_precision 12 4095 2048 1024 in
+  Alcotest.(check bool) "Y in 12-bit range" true (y12 >= 0 && y12 <= 4095);
+  Alcotest.(check bool) "Cb in 12-bit range" true (cb12 >= 0 && cb12 <= 4095);
+  Alcotest.(check bool) "Cr in 12-bit range" true (cr12 >= 0 && cr12 <= 4095)
 
 (** All tests *)
 let () =
@@ -602,5 +768,17 @@ let () =
           Alcotest.test_case "combinations" `Quick test_options_combinations;
           Alcotest.test_case "backward-compat" `Quick
             test_backward_compatibility;
+        ] );
+      ( "restart-markers",
+        [
+          Alcotest.test_case "encoding" `Quick test_restart_interval_encoding;
+          Alcotest.test_case "roundtrip" `Quick test_restart_roundtrip;
+          Alcotest.test_case "progressive" `Quick test_progressive_with_restart;
+        ] );
+      ( "precision",
+        [
+          Alcotest.test_case "12-bit" `Quick test_12bit_precision;
+          Alcotest.test_case "color-conversion" `Quick
+            test_precision_color_conversion;
         ] );
     ]

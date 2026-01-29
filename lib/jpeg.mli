@@ -62,16 +62,26 @@ type encoding_mode =
           - [Progressive]: Progressive DCT encoding (SOF2) for incremental
             display *)
 
+type precision =
+  | Precision_8
+  | Precision_12
+      (** Sample precision:
+          - [Precision_8]: 8-bit samples (0-255, standard)
+          - [Precision_12]: 12-bit samples (0-4095, extended range) *)
+
 type encode_options = {
   quality : int;  (** Compression quality from 1 (worst) to 100 (best) *)
   subsampling : subsampling;  (** Chroma subsampling mode *)
   color_mode : color_mode;  (** Color or grayscale *)
   encoding_mode : encoding_mode;  (** Baseline or progressive *)
+  restart_interval : int;  (** MCUs between RST markers, 0 = disabled *)
+  precision : precision;  (** Sample precision: 8-bit or 12-bit *)
 }
 (** Encoding options for JPEG output. *)
 
 val default_encode_options : encode_options
-(** Default encoding options: quality=75, Sub_420, Color, Baseline *)
+(** Default encoding options: quality=75, Sub_420, Color, Baseline,
+    restart_interval=0, Precision_8 *)
 
 (** {1 Reading JPEG} *)
 

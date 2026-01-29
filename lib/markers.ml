@@ -368,16 +368,18 @@ let write_dht buf tables =
       Array.iter (fun v -> Buffer.add_uint8 buf v) table.values)
     tables
 
-(** Write DQT *)
+(** Write DQT with support for 8-bit and 16-bit precision *)
 let write_dqt buf tables =
   List.iter
     (fun table ->
       write_marker buf marker_dqt;
-      let len = 2 + 1 + 64 in
-      (* 8-bit precision only *)
+      let elem_size = if table.precision = 0 then 1 else 2 in
+      let len = 2 + 1 + (64 * elem_size) in
       write_u16 buf len;
-      Buffer.add_uint8 buf table.table_id;
-      Array.iter (fun v -> Buffer.add_uint8 buf v) table.values)
+      Buffer.add_uint8 buf ((table.precision lsl 4) lor table.table_id);
+      if table.precision = 0 then
+        Array.iter (fun v -> Buffer.add_uint8 buf v) table.values
+      else Array.iter (fun v -> write_u16 buf v) table.values)
     tables
 
 (** Write DRI *)
