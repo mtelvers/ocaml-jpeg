@@ -187,22 +187,15 @@ let parse_sos_header data pos =
 
   { scan_components; ss; se; ah; al }
 
+(** Check for JFIF signature at position *)
+let is_jfif_signature data pos len =
+  len >= 14
+  && Bytes.sub_string data pos 4 = "JFIF"
+  && Bytes.get_uint8 data (pos + 4) = 0x00
+
 (** Parse APP0 JFIF segment *)
 let parse_app0 data pos len =
-  (* Check for JFIF identifier *)
-  if
-    len >= 14
-    && Bytes.get_uint8 data pos = 0x4A
-    (* J *)
-    && Bytes.get_uint8 data (pos + 1) = 0x46
-    (* F *)
-    && Bytes.get_uint8 data (pos + 2) = 0x49
-    (* I *)
-    && Bytes.get_uint8 data (pos + 3) = 0x46
-    &&
-    (* F *)
-    Bytes.get_uint8 data (pos + 4) = 0x00 (* null *)
-  then begin
+  if is_jfif_signature data pos len then begin
     let version_major = Bytes.get_uint8 data (pos + 5) in
     let version_minor = Bytes.get_uint8 data (pos + 6) in
     let density_units = Bytes.get_uint8 data (pos + 7) in
@@ -228,13 +221,13 @@ let find_entropy_end data start_pos =
   let len = Bytes.length data in
   let rec scan pos =
     if pos >= len - 1 then len
-    else if Bytes.get_uint8 data pos = 0xFF then begin
-      let next = Bytes.get_uint8 data (pos + 1) in
+    else if Bytes.get_uint8 data pos = 0xFF then
       (* FF00 is byte stuffing, FFD0-FFD7 are restart markers *)
-      if next = 0x00 || (next >= 0xD0 && next <= 0xD7) then scan (pos + 2)
-      else if next = 0xFF then scan (pos + 1)
-      else pos (* Found a real marker *)
-    end
+      match Bytes.get_uint8 data (pos + 1) with
+      | 0x00 -> scan (pos + 2)
+      | c when c >= 0xD0 && c <= 0xD7 -> scan (pos + 2)
+      | 0xFF -> scan (pos + 1)
+      | _ -> pos (* Found a real marker *)
     else scan (pos + 1)
   in
   scan start_pos

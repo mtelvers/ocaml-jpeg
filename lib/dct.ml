@@ -9,7 +9,7 @@ let cos_table =
           cos (Float.of_int ((2 * x) + 1) *. Float.of_int u *. pi /. 16.0)))
 
 (** Scaling factors for DCT *)
-let c n = if n = 0 then 1.0 /. sqrt 2.0 else 1.0
+let c = function 0 -> 1.0 /. sqrt 2.0 | _ -> 1.0
 
 (** 1D IDCT on 8 values *)
 let idct_1d input =
@@ -98,6 +98,53 @@ let aan_scale_factors =
       let col = i mod 8 in
       1.0 /. (s.(row) *. s.(col) *. 8.0))
 
+(** Core 1D AA&N IDCT transform - shared by row and column passes *)
+let aan_1d_transform get set =
+  let v0 = get 0 and v1 = get 1 and v2 = get 2 and v3 = get 3 in
+  let v4 = get 4 and v5 = get 5 and v6 = get 6 and v7 = get 7 in
+
+  (* Even part *)
+  let t0 = v0 +. v4 in
+  let t1 = v0 -. v4 in
+  let t2 = (v2 *. 1.414213562) -. v6 in
+  let t3 = v2 +. (v6 *. 1.414213562) in
+
+  let t4 = t0 +. t3 in
+  let t5 = t0 -. t3 in
+  let t6 = t1 +. t2 in
+  let t7 = t1 -. t2 in
+
+  (* Odd part *)
+  let z1 = v1 +. v7 in
+  let z2 = v3 +. v5 in
+  let z3 = v1 +. v3 in
+  let z4 = v5 +. v7 in
+  let z5 = (z3 +. z4) *. 1.175875602 in
+
+  let t10 = v1 *. 1.501321110 in
+  let t11 = v3 *. 3.072711026 in
+  let t12 = v5 *. 0.298631336 in
+  let t13 = v7 *. 0.899976223 in
+
+  let z1' = z1 *. -0.899976223 in
+  let z2' = z2 *. -2.562915447 in
+  let z3' = (z3 *. -1.961570560) +. z5 in
+  let z4' = (z4 *. -0.390180644) +. z5 in
+
+  let r4 = t10 +. z1' +. z3' in
+  let r5 = t11 +. z2' +. z4' in
+  let r6 = t12 +. z2' +. z3' in
+  let r7 = t13 +. z1' +. z4' in
+
+  set 0 (t4 +. r4);
+  set 7 (t4 -. r4);
+  set 1 (t6 +. r5);
+  set 6 (t6 -. r5);
+  set 2 (t7 +. r6);
+  set 5 (t7 -. r6);
+  set 3 (t5 +. r7);
+  set 4 (t5 -. r7)
+
 (** Fast IDCT using AA&N algorithm (optimized version) *)
 let idct_aan block =
   (* Scale input *)
@@ -109,109 +156,17 @@ let idct_aan block =
   (* Row transforms *)
   for row = 0 to 7 do
     let offset = row * 8 in
-    let v0 = scaled.(offset + 0) in
-    let v1 = scaled.(offset + 1) in
-    let v2 = scaled.(offset + 2) in
-    let v3 = scaled.(offset + 3) in
-    let v4 = scaled.(offset + 4) in
-    let v5 = scaled.(offset + 5) in
-    let v6 = scaled.(offset + 6) in
-    let v7 = scaled.(offset + 7) in
-
-    (* Even part *)
-    let t0 = v0 +. v4 in
-    let t1 = v0 -. v4 in
-    let t2 = (v2 *. 1.414213562) -. v6 in
-    let t3 = v2 +. (v6 *. 1.414213562) in
-
-    let t4 = t0 +. t3 in
-    let t5 = t0 -. t3 in
-    let t6 = t1 +. t2 in
-    let t7 = t1 -. t2 in
-
-    (* Odd part - simplified *)
-    let z1 = v1 +. v7 in
-    let z2 = v3 +. v5 in
-    let z3 = v1 +. v3 in
-    let z4 = v5 +. v7 in
-    let z5 = (z3 +. z4) *. 1.175875602 in
-
-    let t10 = v1 *. 1.501321110 in
-    let t11 = v3 *. 3.072711026 in
-    let t12 = v5 *. 0.298631336 in
-    let t13 = v7 *. 0.899976223 in
-
-    let z1' = z1 *. -0.899976223 in
-    let z2' = z2 *. -2.562915447 in
-    let z3' = (z3 *. -1.961570560) +. z5 in
-    let z4' = (z4 *. -0.390180644) +. z5 in
-
-    let r4 = t10 +. z1' +. z3' in
-    let r5 = t11 +. z2' +. z4' in
-    let r6 = t12 +. z2' +. z3' in
-    let r7 = t13 +. z1' +. z4' in
-
-    temp.(offset + 0) <- t4 +. r4;
-    temp.(offset + 7) <- t4 -. r4;
-    temp.(offset + 1) <- t6 +. r5;
-    temp.(offset + 6) <- t6 -. r5;
-    temp.(offset + 2) <- t7 +. r6;
-    temp.(offset + 5) <- t7 -. r6;
-    temp.(offset + 3) <- t5 +. r7;
-    temp.(offset + 4) <- t5 -. r7
+    aan_1d_transform
+      (fun i -> scaled.(offset + i))
+      (fun i v -> temp.(offset + i) <- v)
   done;
 
-  (* Column transforms - same algorithm *)
+  (* Column transforms *)
   let result = Array.make 64 0.0 in
   for col = 0 to 7 do
-    let v0 = temp.((0 * 8) + col) in
-    let v1 = temp.((1 * 8) + col) in
-    let v2 = temp.((2 * 8) + col) in
-    let v3 = temp.((3 * 8) + col) in
-    let v4 = temp.((4 * 8) + col) in
-    let v5 = temp.((5 * 8) + col) in
-    let v6 = temp.((6 * 8) + col) in
-    let v7 = temp.((7 * 8) + col) in
-
-    let t0 = v0 +. v4 in
-    let t1 = v0 -. v4 in
-    let t2 = (v2 *. 1.414213562) -. v6 in
-    let t3 = v2 +. (v6 *. 1.414213562) in
-
-    let t4 = t0 +. t3 in
-    let t5 = t0 -. t3 in
-    let t6 = t1 +. t2 in
-    let t7 = t1 -. t2 in
-
-    let z1 = v1 +. v7 in
-    let z2 = v3 +. v5 in
-    let z3 = v1 +. v3 in
-    let z4 = v5 +. v7 in
-    let z5 = (z3 +. z4) *. 1.175875602 in
-
-    let t10 = v1 *. 1.501321110 in
-    let t11 = v3 *. 3.072711026 in
-    let t12 = v5 *. 0.298631336 in
-    let t13 = v7 *. 0.899976223 in
-
-    let z1' = z1 *. -0.899976223 in
-    let z2' = z2 *. -2.562915447 in
-    let z3' = (z3 *. -1.961570560) +. z5 in
-    let z4' = (z4 *. -0.390180644) +. z5 in
-
-    let r4 = t10 +. z1' +. z3' in
-    let r5 = t11 +. z2' +. z4' in
-    let r6 = t12 +. z2' +. z3' in
-    let r7 = t13 +. z1' +. z4' in
-
-    result.((0 * 8) + col) <- t4 +. r4;
-    result.((7 * 8) + col) <- t4 -. r4;
-    result.((1 * 8) + col) <- t6 +. r5;
-    result.((6 * 8) + col) <- t6 -. r5;
-    result.((2 * 8) + col) <- t7 +. r6;
-    result.((5 * 8) + col) <- t7 -. r6;
-    result.((3 * 8) + col) <- t5 +. r7;
-    result.((4 * 8) + col) <- t5 -. r7
+    aan_1d_transform
+      (fun i -> temp.((i * 8) + col))
+      (fun i v -> result.((i * 8) + col) <- v)
   done;
 
   result

@@ -1,8 +1,8 @@
-(** Pure OCaml JPEG library for reading and writing baseline sequential
-    JPEG/JFIF files.
+(** Pure OCaml JPEG library for reading and writing JPEG/JFIF files.
 
     Supported features:
     - Baseline sequential DCT JPEG (SOF0)
+    - Progressive DCT JPEG (SOF2)
     - 8-bit precision
     - Grayscale and YCbCr color (1 or 3 components)
     - Standard Huffman coding
@@ -35,6 +35,44 @@ type image = {
 }
 (** JPEG image with pixel data and optional EXIF metadata. *)
 
+(** {1 Encoding Options} *)
+
+type subsampling =
+  | Sub_444
+  | Sub_422
+  | Sub_420
+      (** Chroma subsampling modes:
+          - [Sub_444]: No subsampling (highest quality, largest files)
+          - [Sub_422]: Horizontal subsampling only (2:1 horizontal ratio)
+          - [Sub_420]: Both horizontal and vertical subsampling (2:1 both
+            directions) *)
+
+type color_mode =
+  | Color
+  | Grayscale
+      (** Color modes:
+          - [Color]: Full YCbCr color encoding (3 components)
+          - [Grayscale]: Single luminance component only *)
+
+type encoding_mode =
+  | Baseline
+  | Progressive
+      (** Encoding modes:
+          - [Baseline]: Standard sequential DCT encoding (SOF0)
+          - [Progressive]: Progressive DCT encoding (SOF2) for incremental
+            display *)
+
+type encode_options = {
+  quality : int;  (** Compression quality from 1 (worst) to 100 (best) *)
+  subsampling : subsampling;  (** Chroma subsampling mode *)
+  color_mode : color_mode;  (** Color or grayscale *)
+  encoding_mode : encoding_mode;  (** Baseline or progressive *)
+}
+(** Encoding options for JPEG output. *)
+
+val default_encode_options : encode_options
+(** Default encoding options: quality=75, Sub_420, Color, Baseline *)
+
 (** {1 Reading JPEG} *)
 
 val read : string -> image
@@ -50,15 +88,28 @@ val read_bytes : bytes -> image
 
 val write : ?quality:int -> string -> image -> unit
 (** [write filename image ~quality] writes an image to the given file path as
-    JPEG.
+    JPEG using default options (baseline, 4:2:0, color).
     @param quality
       Compression quality from 1 (worst) to 100 (best). Default is 75.
     @raise Failure if the file cannot be written. *)
 
 val write_bytes : ?quality:int -> image -> bytes
-(** [write_bytes image ~quality] encodes an image to JPEG bytes in memory.
+(** [write_bytes image ~quality] encodes an image to JPEG bytes in memory using
+    default options (baseline, 4:2:0, color).
     @param quality
       Compression quality from 1 (worst) to 100 (best). Default is 75. *)
+
+val write_with_options : encode_options -> string -> image -> unit
+(** [write_with_options options filename image] writes an image to the given
+    file path with the specified encoding options.
+    @raise Failure if the file cannot be written. *)
+
+val write_bytes_with_options : encode_options -> image -> bytes
+(** [write_bytes_with_options options image] encodes an image to JPEG bytes with
+    the specified encoding options. Supports:
+    - Baseline and progressive encoding modes
+    - 4:4:4, 4:2:2, and 4:2:0 chroma subsampling
+    - Color and grayscale output *)
 
 (** {1 Image Creation} *)
 

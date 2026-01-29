@@ -1,11 +1,10 @@
 (** Color space conversions for JPEG *)
 
 (** Clamp value to 0-255 range *)
-let clamp v = if v < 0 then 0 else if v > 255 then 255 else v
+let clamp v = max 0 (min 255 v)
 
 (** Clamp float to 0-255 and convert to int *)
-let clamp_float v =
-  if v < 0.0 then 0 else if v > 255.0 then 255 else int_of_float (v +. 0.5)
+let clamp_float v = max 0 (min 255 (int_of_float (v +. 0.5)))
 
 (** Convert RGB to YCbCr Y = 0.299*R + 0.587*G + 0.114*B Cb = -0.169*R - 0.331*G
     \+ 0.500*B + 128 Cr = 0.500*R - 0.419*G - 0.081*B + 128 *)
@@ -155,6 +154,9 @@ let upsample_422 plane orig_width height new_width =
   done;
 
   result
+
+(** No subsampling (4:4:4) - identity function for chroma *)
+let no_subsample plane _width _height = Array.copy plane
 
 (** Bilinear upsample for 4:2:0 (better quality) *)
 let upsample_420_bilinear plane orig_width orig_height new_width new_height =

@@ -255,18 +255,12 @@ let dequantize block table =
 (** Convert block from natural order to zig-zag order *)
 let to_zigzag block = Array.init 64 (fun i -> block.(zigzag_order.(i)))
 
-(** Convert block from zig-zag order to natural order *)
-let from_zigzag block =
-  let result = Array.make 64 0 in
-  for i = 0 to 63 do
-    result.(zigzag_order.(i)) <- block.(i)
-  done;
-  result
+(** Convert block from zig-zag order to natural order (generic helper) *)
+let from_zigzag_generic block =
+  Array.init 64 (fun i -> block.(zigzag_inverse.(i)))
+
+(** Convert int block from zig-zag order to natural order *)
+let from_zigzag block = from_zigzag_generic block
 
 (** Convert float block from zig-zag order to natural order *)
-let from_zigzag_float block =
-  let result = Array.make 64 0.0 in
-  for i = 0 to 63 do
-    result.(zigzag_order.(i)) <- block.(i)
-  done;
-  result
+let from_zigzag_float block = from_zigzag_generic block

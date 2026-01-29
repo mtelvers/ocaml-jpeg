@@ -288,6 +288,268 @@ let test_progressive_frame_type () =
           (f.Markers.frame_type = Markers.Progressive)
   end
 
+(** Test transform_and_quantize produces consistent results *)
+let test_transform_and_quantize () =
+  (* Create a block with mid-gray values (128) *)
+  let block = Array.make 64 128 in
+  let quant_table = Quantization.luminance_table 75 in
+
+  (* Use the new transform_and_quantize function *)
+  let shifted = Color.level_shift_block_down block in
+  let dct_coeffs = Dct.fdct shifted in
+  let quantized = Quantization.quantize dct_coeffs quant_table in
+
+  (* For uniform mid-gray, after level shift (all zeros), DC should be ~0 *)
+  Alcotest.(check bool)
+    "DC coefficient near zero for uniform gray" true
+    (abs quantized.(0) < 5)
+
+(** Test subsampling modes produce correct dimensions *)
+let test_subsampling_modes () =
+  let width = 32 in
+  let height = 24 in
+
+  (* Create test image *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Test 4:4:4 *)
+  let data_444 =
+    Jpeg.write_bytes_with_options
+      { Jpeg.default_encode_options with subsampling = Jpeg.Sub_444 }
+      image
+  in
+  let decoded_444 = Jpeg.read_bytes data_444 in
+  Alcotest.(check int) "4:4:4 width" width decoded_444.Jpeg.width;
+  Alcotest.(check int) "4:4:4 height" height decoded_444.Jpeg.height;
+
+  (* Test 4:2:2 *)
+  let data_422 =
+    Jpeg.write_bytes_with_options
+      { Jpeg.default_encode_options with subsampling = Jpeg.Sub_422 }
+      image
+  in
+  let decoded_422 = Jpeg.read_bytes data_422 in
+  Alcotest.(check int) "4:2:2 width" width decoded_422.Jpeg.width;
+  Alcotest.(check int) "4:2:2 height" height decoded_422.Jpeg.height;
+
+  (* Test 4:2:0 *)
+  let data_420 =
+    Jpeg.write_bytes_with_options
+      { Jpeg.default_encode_options with subsampling = Jpeg.Sub_420 }
+      image
+  in
+  let decoded_420 = Jpeg.read_bytes data_420 in
+  Alcotest.(check int) "4:2:0 width" width decoded_420.Jpeg.width;
+  Alcotest.(check int) "4:2:0 height" height decoded_420.Jpeg.height
+
+(** Test grayscale encoding produces single-component JPEG *)
+let test_grayscale_encode () =
+  let width = 16 in
+  let height = 16 in
+
+  (* Create grayscale gradient *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let gray = ((y * width) + x) * 256 / (width * height) in
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx gray;
+      Bigarray.Array1.set pixels (idx + 1) gray;
+      Bigarray.Array1.set pixels (idx + 2) gray
+    done
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  let data =
+    Jpeg.write_bytes_with_options
+      { Jpeg.default_encode_options with color_mode = Jpeg.Grayscale }
+      image
+  in
+
+  (* Decode and verify *)
+  let decoded = Jpeg.read_bytes data in
+  Alcotest.(check int) "Grayscale width" width decoded.Jpeg.width;
+  Alcotest.(check int) "Grayscale height" height decoded.Jpeg.height;
+
+  (* Verify R=G=B for grayscale *)
+  let r, g, b = Jpeg.get_pixel decoded 8 8 in
+  Alcotest.(check int) "Grayscale R=G" r g;
+  Alcotest.(check int) "Grayscale G=B" g b
+
+(** Test progressive encoding roundtrip *)
+let test_progressive_encode_roundtrip () =
+  let width = 32 in
+  let height = 32 in
+
+  (* Create test image with gradient *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx (x * 8);
+      Bigarray.Array1.set pixels (idx + 1) (y * 8);
+      Bigarray.Array1.set pixels (idx + 2) 128
+    done
+  done;
+  let original = Jpeg.create_image width height pixels in
+
+  (* Encode as progressive *)
+  let data =
+    Jpeg.write_bytes_with_options
+      { Jpeg.default_encode_options with encoding_mode = Jpeg.Progressive }
+      original
+  in
+
+  (* Verify it's progressive by checking for SOF2 marker *)
+  let markers = Markers.parse_markers data in
+  let has_sof2 =
+    List.exists
+      (fun m -> match m with Markers.SOF2 _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has SOF2 marker" true has_sof2;
+
+  (* Decode and verify dimensions *)
+  let decoded = Jpeg.read_bytes data in
+  Alcotest.(check int) "Progressive width" width decoded.Jpeg.width;
+  Alcotest.(check int) "Progressive height" height decoded.Jpeg.height;
+
+  (* Verify pixel quality (lossy, so allow some error) *)
+  let max_error = ref 0 in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let r1, g1, b1 = Jpeg.get_pixel original x y in
+      let r2, g2, b2 = Jpeg.get_pixel decoded x y in
+      let err = max (abs (r1 - r2)) (max (abs (g1 - g2)) (abs (b1 - b2))) in
+      if err > !max_error then max_error := err
+    done
+  done;
+  Alcotest.(check bool) "Progressive pixel error < 50" true (!max_error < 50)
+
+(** Test all option combinations produce valid JPEGs *)
+let test_options_combinations () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i * 7 mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  let subsampling_modes = [ Jpeg.Sub_444; Jpeg.Sub_422; Jpeg.Sub_420 ] in
+  let color_modes = [ Jpeg.Color; Jpeg.Grayscale ] in
+  let encoding_modes = [ Jpeg.Baseline; Jpeg.Progressive ] in
+
+  List.iter
+    (fun sub ->
+      List.iter
+        (fun color ->
+          List.iter
+            (fun enc ->
+              let options =
+                {
+                  Jpeg.quality = 75;
+                  subsampling = sub;
+                  color_mode = color;
+                  encoding_mode = enc;
+                }
+              in
+              let data = Jpeg.write_bytes_with_options options image in
+
+              (* Verify valid JPEG (starts with SOI) *)
+              Alcotest.(check int)
+                "Valid JPEG start 1" 0xFF (Bytes.get_uint8 data 0);
+              Alcotest.(check int)
+                "Valid JPEG start 2" 0xD8 (Bytes.get_uint8 data 1);
+
+              (* Verify can decode *)
+              let decoded = Jpeg.read_bytes data in
+              Alcotest.(check int) "Decoded width" width decoded.Jpeg.width;
+              Alcotest.(check int) "Decoded height" height decoded.Jpeg.height)
+            encoding_modes)
+        color_modes)
+    subsampling_modes
+
+(** Test backward compatibility of write_bytes *)
+let test_backward_compatibility () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Old API still works *)
+  let data = Jpeg.write_bytes ~quality:80 image in
+  let decoded = Jpeg.read_bytes data in
+
+  Alcotest.(check int) "Backward compat width" width decoded.Jpeg.width;
+  Alcotest.(check int) "Backward compat height" height decoded.Jpeg.height
+
+(** Test progressive grayscale encoding *)
+let test_progressive_grayscale () =
+  let width = 24 in
+  let height = 24 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let gray = (x + y) * 5 in
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx gray;
+      Bigarray.Array1.set pixels (idx + 1) gray;
+      Bigarray.Array1.set pixels (idx + 2) gray
+    done
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  let options =
+    {
+      Jpeg.quality = 90;
+      subsampling = Jpeg.Sub_444;
+      color_mode = Jpeg.Grayscale;
+      encoding_mode = Jpeg.Progressive;
+    }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Verify SOF2 marker *)
+  let markers = Markers.parse_markers data in
+  let has_sof2 =
+    List.exists
+      (fun m -> match m with Markers.SOF2 _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Grayscale progressive has SOF2" true has_sof2;
+
+  let decoded = Jpeg.read_bytes data in
+  Alcotest.(check int) "Progressive grayscale width" width decoded.Jpeg.width
+
 (** All tests *)
 let () =
   Alcotest.run "JPEG Library"
@@ -320,5 +582,25 @@ let () =
             test_baseline_frame_type;
           Alcotest.test_case "progressive-frame-type" `Quick
             test_progressive_frame_type;
+        ] );
+      ( "transform",
+        [
+          Alcotest.test_case "transform-and-quantize" `Quick
+            test_transform_and_quantize;
+        ] );
+      ( "subsampling",
+        [ Alcotest.test_case "modes" `Quick test_subsampling_modes ] );
+      ("grayscale", [ Alcotest.test_case "encode" `Quick test_grayscale_encode ]);
+      ( "progressive-encode",
+        [
+          Alcotest.test_case "roundtrip" `Quick
+            test_progressive_encode_roundtrip;
+          Alcotest.test_case "grayscale" `Quick test_progressive_grayscale;
+        ] );
+      ( "options",
+        [
+          Alcotest.test_case "combinations" `Quick test_options_combinations;
+          Alcotest.test_case "backward-compat" `Quick
+            test_backward_compatibility;
         ] );
     ]

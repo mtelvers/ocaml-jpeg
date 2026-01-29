@@ -35,20 +35,13 @@ let read_byte_internal reader =
   let b = Bytes.get_uint8 reader.data reader.pos in
   reader.pos <- reader.pos + 1;
   (* Handle byte stuffing: FF followed by 00 means just FF *)
-  if b = 0xFF && reader.pos < Bytes.length reader.data then begin
-    let next = Bytes.get_uint8 reader.data reader.pos in
-    if next = 0x00 then
-      reader.pos <- reader.pos + 1 (* skip the stuffed 00 byte *)
-    else if next >= 0xD0 && next <= 0xD7 then
-      (* RST marker - skip it and continue *)
-      reader.pos <- reader.pos + 1
-    else if next = 0xFF then
-      (* Multiple FF bytes - keep reading *)
-      ()
-    else
-      (* This is a marker - don't consume it, caller should handle *)
-      reader.pos <- reader.pos - 1
-  end;
+  (if b = 0xFF && reader.pos < Bytes.length reader.data then
+     match Bytes.get_uint8 reader.data reader.pos with
+     | 0x00 -> reader.pos <- reader.pos + 1 (* skip the stuffed 00 byte *)
+     | c when c >= 0xD0 && c <= 0xD7 ->
+         reader.pos <- reader.pos + 1 (* RST marker - skip it *)
+     | 0xFF -> () (* Multiple FF bytes - keep reading *)
+     | _ -> reader.pos <- reader.pos - 1 (* Marker - don't consume *));
   b
 
 (** Read a single bit (returns 0 or 1) *)
@@ -75,9 +68,12 @@ let read_bits reader n =
 (** Peek at marker (check for FF xx sequence without consuming) *)
 let peek_marker reader =
   if reader.pos < Bytes.length reader.data - 1 then
-    let b1 = Bytes.get_uint8 reader.data reader.pos in
-    let b2 = Bytes.get_uint8 reader.data (reader.pos + 1) in
-    if b1 = 0xFF && b2 <> 0x00 && b2 <> 0xFF then Some b2 else None
+    match
+      ( Bytes.get_uint8 reader.data reader.pos,
+        Bytes.get_uint8 reader.data (reader.pos + 1) )
+    with
+    | 0xFF, c when c <> 0x00 && c <> 0xFF -> Some c
+    | _ -> None
   else None
 
 (** Align reader to next byte boundary *)

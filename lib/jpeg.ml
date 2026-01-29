@@ -21,6 +21,31 @@ type image = {
 }
 (** JPEG image *)
 
+(** Chroma subsampling modes *)
+type subsampling = Sub_444 | Sub_422 | Sub_420
+
+(** Color modes *)
+type color_mode = Color | Grayscale
+
+(** Encoding modes *)
+type encoding_mode = Baseline | Progressive
+
+type encode_options = {
+  quality : int;
+  subsampling : subsampling;
+  color_mode : color_mode;
+  encoding_mode : encoding_mode;
+}
+(** Encoding options *)
+
+let default_encode_options =
+  {
+    quality = 75;
+    subsampling = Sub_420;
+    color_mode = Color;
+    encoding_mode = Baseline;
+  }
+
 type decode_state = {
   mutable frame : Markers.frame_header option;
   mutable quant_tables : Markers.quant_table array;
@@ -668,6 +693,59 @@ let read filename =
 
 (* === ENCODING === *)
 
+(** Transform and quantize a block (level shift -> DCT -> quantize) Returns
+    quantized coefficients in zig-zag order *)
+let transform_and_quantize block quant_table =
+  (* Level shift *)
+  let shifted = Color.level_shift_block_down block in
+  (* Forward DCT *)
+  let dct_coeffs = Dct.fdct shifted in
+  (* Quantize (returns zig-zag ordered) *)
+  Quantization.quantize dct_coeffs quant_table
+
+(** Encode DC coefficient, returns new DC value for prediction *)
+let encode_dc writer dc_table dc_value prev_dc =
+  let dc_diff = dc_value - prev_dc in
+  let dc_category = Huffman.category dc_diff in
+  Huffman.encode_symbol writer dc_table dc_category;
+  if dc_category > 0 then
+    Bitstream.write_bits writer
+      (Huffman.encode_value dc_diff dc_category)
+      dc_category;
+  dc_value
+
+(** Encode AC coefficients from pre-quantized data *)
+let encode_ac writer ac_table quantized =
+  let run_length = ref 0 in
+  for i = 1 to 63 do
+    let ac_value = quantized.(i) in
+    if ac_value = 0 then incr run_length
+    else begin
+      (* Emit ZRL for runs > 15 *)
+      while !run_length > 15 do
+        Huffman.encode_symbol writer ac_table 0xF0;
+        run_length := !run_length - 16
+      done;
+      (* Encode run/size and value *)
+      let ac_category = Huffman.category ac_value in
+      let symbol = (!run_length lsl 4) lor ac_category in
+      Huffman.encode_symbol writer ac_table symbol;
+      Bitstream.write_bits writer
+        (Huffman.encode_value ac_value ac_category)
+        ac_category;
+      run_length := 0
+    end
+  done;
+  (* EOB if we ended with zeros *)
+  if !run_length > 0 then Huffman.encode_symbol writer ac_table 0x00
+
+(** Encode a block from pre-quantized coefficients *)
+let encode_block_from_coeffs writer quantized dc_table ac_table prev_dc =
+  let dc_value = quantized.(0) in
+  let new_dc = encode_dc writer dc_table dc_value prev_dc in
+  encode_ac writer ac_table quantized;
+  new_dc
+
 (** Encode a single 8x8 block *)
 let encode_block writer block dc_table ac_table quant_table prev_dc =
   (* Level shift *)
@@ -731,6 +809,583 @@ let extract_block plane plane_width plane_height bx by =
     done
   done;
   block
+
+(* === PROGRESSIVE ENCODING === *)
+
+type scan_spec = {
+  components : int list; (* Component indices to include *)
+  ss : int; (* Start of spectral selection *)
+  se : int; (* End of spectral selection *)
+  ah : int; (* Successive approximation high *)
+  al : int; (* Successive approximation low *)
+}
+(** Scan specification for progressive encoding *)
+
+(** Default progressive scan pattern - 3 scans for good progressive display *)
+let default_progressive_scans =
+  [
+    (* DC for all components - shows blocky preview immediately *)
+    { components = [ 0; 1; 2 ]; ss = 0; se = 0; ah = 0; al = 0 };
+    (* Low-frequency AC - adds basic detail *)
+    { components = [ 0; 1; 2 ]; ss = 1; se = 5; ah = 0; al = 0 };
+    (* High-frequency AC - completes image *)
+    { components = [ 0; 1; 2 ]; ss = 6; se = 63; ah = 0; al = 0 };
+  ]
+
+(** Grayscale progressive scan pattern *)
+let grayscale_progressive_scans =
+  [
+    { components = [ 0 ]; ss = 0; se = 0; ah = 0; al = 0 };
+    { components = [ 0 ]; ss = 1; se = 5; ah = 0; al = 0 };
+    { components = [ 0 ]; ss = 6; se = 63; ah = 0; al = 0 };
+  ]
+
+(** Encode DC coefficient for first DC scan (DC_First) *)
+let encode_dc_first writer dc_table dc_value al prev_dc =
+  let shifted_dc = dc_value asr al in
+  let shifted_prev = prev_dc asr al in
+  let dc_diff = shifted_dc - shifted_prev in
+  let dc_category = Huffman.category dc_diff in
+  Huffman.encode_symbol writer dc_table dc_category;
+  if dc_category > 0 then
+    Bitstream.write_bits writer
+      (Huffman.encode_value dc_diff dc_category)
+      dc_category;
+  dc_value
+
+(** Encode AC coefficients for first AC scan (AC_First) Using simple EOB (0x00)
+    for each zero block - standard tables don't support extended EOBn *)
+let encode_ac_first writer ac_table coeffs ss se al =
+  (* Check if all coefficients in range are zero *)
+  let all_zero = ref true in
+  for k = ss to se do
+    let coeff = coeffs.(k) asr al in
+    if coeff <> 0 then all_zero := false
+  done;
+
+  if !all_zero then begin
+    (* Emit EOB for this block *)
+    Huffman.encode_symbol writer ac_table 0x00
+  end
+  else begin
+    let run_length = ref 0 in
+    for k = ss to se do
+      let coeff = coeffs.(k) asr al in
+      if coeff = 0 then incr run_length
+      else begin
+        (* Emit ZRL for runs > 15 *)
+        while !run_length > 15 do
+          Huffman.encode_symbol writer ac_table 0xF0;
+          run_length := !run_length - 16
+        done;
+        (* Encode run/size and value *)
+        let ac_category = Huffman.category coeff in
+        let symbol = (!run_length lsl 4) lor ac_category in
+        Huffman.encode_symbol writer ac_table symbol;
+        Bitstream.write_bits writer
+          (Huffman.encode_value coeff ac_category)
+          ac_category;
+        run_length := 0
+      end
+    done;
+    (* If we ended with zeros, emit EOB *)
+    if !run_length > 0 then Huffman.encode_symbol writer ac_table 0x00
+  end
+
+(** Encode a progressive DC scan *)
+let encode_progressive_dc_scan coefficients h_blocks num_blocks dc_tables
+    scan_spec mcu_h mcu_v y_h_sampling y_v_sampling cb_h_sampling cb_v_sampling
+    =
+  let writer = Bitstream.create_writer () in
+  let al = scan_spec.al in
+  let num_components = List.length scan_spec.components in
+  let prev_dc = Array.make num_components 0 in
+
+  for mcu_y = 0 to mcu_v - 1 do
+    for mcu_x = 0 to mcu_h - 1 do
+      List.iteri
+        (fun sci ci ->
+          let dc_table = dc_tables.(if ci = 0 then 0 else 1) in
+          let h_sampling = if ci = 0 then y_h_sampling else cb_h_sampling in
+          let v_sampling = if ci = 0 then y_v_sampling else cb_v_sampling in
+
+          for v = 0 to v_sampling - 1 do
+            for h = 0 to h_sampling - 1 do
+              let bx = (mcu_x * h_sampling) + h in
+              let by = (mcu_y * v_sampling) + v in
+              let block_idx = (by * h_blocks.(ci)) + bx in
+              if block_idx < num_blocks.(ci) then begin
+                let coeffs = coefficients.(ci).(block_idx) in
+                prev_dc.(sci) <-
+                  encode_dc_first writer dc_table coeffs.(0) al prev_dc.(sci)
+              end
+            done
+          done)
+        scan_spec.components
+    done
+  done;
+
+  Bitstream.flush_writer writer;
+  Bitstream.get_bytes writer
+
+(** Encode a progressive AC scan *)
+let encode_progressive_ac_scan coefficients h_blocks num_blocks ac_tables
+    scan_spec mcu_h mcu_v y_h_sampling y_v_sampling cb_h_sampling cb_v_sampling
+    =
+  let writer = Bitstream.create_writer () in
+  let ss = scan_spec.ss in
+  let se = scan_spec.se in
+  let al = scan_spec.al in
+
+  for mcu_y = 0 to mcu_v - 1 do
+    for mcu_x = 0 to mcu_h - 1 do
+      List.iter
+        (fun ci ->
+          let ac_table = ac_tables.(if ci = 0 then 0 else 1) in
+          let h_sampling = if ci = 0 then y_h_sampling else cb_h_sampling in
+          let v_sampling = if ci = 0 then y_v_sampling else cb_v_sampling in
+
+          for v = 0 to v_sampling - 1 do
+            for h = 0 to h_sampling - 1 do
+              let bx = (mcu_x * h_sampling) + h in
+              let by = (mcu_y * v_sampling) + v in
+              let block_idx = (by * h_blocks.(ci)) + bx in
+              if block_idx < num_blocks.(ci) then begin
+                let coeffs = coefficients.(ci).(block_idx) in
+                encode_ac_first writer ac_table coeffs ss se al
+              end
+            done
+          done)
+        scan_spec.components
+    done
+  done;
+
+  Bitstream.flush_writer writer;
+  Bitstream.get_bytes writer
+
+(** Encode JPEG with options *)
+let write_bytes_with_options options image =
+  let width = image.width in
+  let height = image.height in
+  let quality = options.quality in
+
+  (* Convert RGB to YCbCr *)
+  let pixels_array =
+    Array.init
+      (width * height * 3)
+      (fun i -> Bigarray.Array1.get image.pixels i)
+  in
+
+  let y_plane, cb_plane, cr_plane =
+    Color.rgb_buffer_to_ycbcr pixels_array width height
+  in
+
+  (* Determine subsampling parameters *)
+  let ( y_h_sampling,
+        y_v_sampling,
+        cb_h_sampling,
+        cb_v_sampling,
+        chroma_width,
+        chroma_height,
+        cb_sub,
+        cr_sub ) =
+    match options.color_mode with
+    | Grayscale ->
+        (* Grayscale: only Y component *)
+        (1, 1, 1, 1, width, height, [||], [||])
+    | Color -> (
+        match options.subsampling with
+        | Sub_444 ->
+            (* 4:4:4: No subsampling *)
+            ( 1,
+              1,
+              1,
+              1,
+              width,
+              height,
+              Color.no_subsample cb_plane width height,
+              Color.no_subsample cr_plane width height )
+        | Sub_422 ->
+            (* 4:2:2: Horizontal subsampling only *)
+            let cw = (width + 1) / 2 in
+            ( 2,
+              1,
+              1,
+              1,
+              cw,
+              height,
+              Color.subsample_422 cb_plane width height,
+              Color.subsample_422 cr_plane width height )
+        | Sub_420 ->
+            (* 4:2:0: Both horizontal and vertical subsampling *)
+            let cw = (width + 1) / 2 in
+            let ch = (height + 1) / 2 in
+            ( 2,
+              2,
+              1,
+              1,
+              cw,
+              ch,
+              Color.subsample_420 cb_plane width height,
+              Color.subsample_420 cr_plane width height ))
+  in
+
+  (* Get quantization tables *)
+  let lum_quant = Quantization.luminance_table quality in
+  let chr_quant = Quantization.chrominance_table quality in
+
+  (* Build Huffman tables *)
+  let dc_lum = Huffman.std_dc_luminance_table () in
+  let ac_lum = Huffman.std_ac_luminance_table () in
+  let dc_chr = Huffman.std_dc_chrominance_table () in
+  let ac_chr = Huffman.std_ac_chrominance_table () in
+
+  (* Calculate MCU dimensions *)
+  let mcu_width = y_h_sampling * 8 in
+  let mcu_height = y_v_sampling * 8 in
+  let mcu_h = (width + mcu_width - 1) / mcu_width in
+  let mcu_v = (height + mcu_height - 1) / mcu_height in
+
+  (* For grayscale, we only have one component *)
+  let is_grayscale = options.color_mode = Grayscale in
+  let num_components = if is_grayscale then 1 else 3 in
+
+  (* Build frame header components *)
+  let frame_components =
+    if is_grayscale then
+      [|
+        {
+          Markers.component_id = 1;
+          h_sampling = 1;
+          v_sampling = 1;
+          quant_table_id = 0;
+        };
+      |]
+    else
+      [|
+        {
+          Markers.component_id = 1;
+          h_sampling = y_h_sampling;
+          v_sampling = y_v_sampling;
+          quant_table_id = 0;
+        };
+        {
+          Markers.component_id = 2;
+          h_sampling = cb_h_sampling;
+          v_sampling = cb_v_sampling;
+          quant_table_id = 1;
+        };
+        {
+          Markers.component_id = 3;
+          h_sampling = cb_h_sampling;
+          v_sampling = cb_v_sampling;
+          quant_table_id = 1;
+        };
+      |]
+  in
+
+  (* Calculate block counts for each component *)
+  let y_h_blocks = mcu_h * y_h_sampling in
+  let y_v_blocks = mcu_v * y_v_sampling in
+  let cb_h_blocks = if is_grayscale then 0 else mcu_h * cb_h_sampling in
+  let cb_v_blocks = if is_grayscale then 0 else mcu_v * cb_v_sampling in
+
+  let h_blocks =
+    if is_grayscale then [| y_h_blocks |]
+    else [| y_h_blocks; cb_h_blocks; cb_h_blocks |]
+  in
+  let v_blocks =
+    if is_grayscale then [| y_v_blocks |]
+    else [| y_v_blocks; cb_v_blocks; cb_v_blocks |]
+  in
+  let num_blocks = Array.map2 ( * ) h_blocks v_blocks in
+
+  (* Transform and quantize all blocks *)
+  let coefficients =
+    Array.init num_components (fun ci ->
+        let quant_table = if ci = 0 then lum_quant else chr_quant in
+        let plane, pw, ph =
+          if ci = 0 then (y_plane, width, height)
+          else if ci = 1 then (cb_sub, chroma_width, chroma_height)
+          else (cr_sub, chroma_width, chroma_height)
+        in
+        Array.init num_blocks.(ci) (fun block_idx ->
+            let bx = block_idx mod h_blocks.(ci) in
+            let by = block_idx / h_blocks.(ci) in
+            let block = extract_block plane pw ph bx by in
+            transform_and_quantize block quant_table))
+  in
+
+  match options.encoding_mode with
+  | Baseline ->
+      (* Baseline encoding: single scan *)
+      let writer = Bitstream.create_writer () in
+      let prev_dc = Array.make num_components 0 in
+
+      for mcu_y = 0 to mcu_v - 1 do
+        for mcu_x = 0 to mcu_h - 1 do
+          for ci = 0 to num_components - 1 do
+            let dc_table = if ci = 0 then dc_lum else dc_chr in
+            let ac_table = if ci = 0 then ac_lum else ac_chr in
+            let h_sampling = if ci = 0 then y_h_sampling else cb_h_sampling in
+            let v_sampling = if ci = 0 then y_v_sampling else cb_v_sampling in
+
+            for v = 0 to v_sampling - 1 do
+              for h = 0 to h_sampling - 1 do
+                let bx = (mcu_x * h_sampling) + h in
+                let by = (mcu_y * v_sampling) + v in
+                let block_idx = (by * h_blocks.(ci)) + bx in
+                if block_idx < num_blocks.(ci) then begin
+                  let quantized = coefficients.(ci).(block_idx) in
+                  prev_dc.(ci) <-
+                    encode_block_from_coeffs writer quantized dc_table ac_table
+                      prev_dc.(ci)
+                end
+              done
+            done
+          done
+        done
+      done;
+
+      Bitstream.flush_writer writer;
+      let scan_data = Bitstream.get_bytes writer in
+
+      (* Build scan components *)
+      let scan_components =
+        if is_grayscale then
+          [| { Markers.selector = 1; dc_table = 0; ac_table = 0 } |]
+        else
+          [|
+            { Markers.selector = 1; dc_table = 0; ac_table = 0 };
+            { Markers.selector = 2; dc_table = 1; ac_table = 1 };
+            { Markers.selector = 3; dc_table = 1; ac_table = 1 };
+          |]
+      in
+
+      (* Build marker list *)
+      let markers =
+        [
+          Markers.SOI;
+          Markers.APP0
+            {
+              version_major = 1;
+              version_minor = 1;
+              density_units = 0;
+              x_density = 1;
+              y_density = 1;
+              thumbnail_width = 0;
+              thumbnail_height = 0;
+            };
+        ]
+        @ (match image.exif with
+          | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
+          | None -> [])
+        @ [
+            Markers.DQT
+              (if is_grayscale then
+                 [ { Markers.table_id = 0; precision = 0; values = lum_quant } ]
+               else
+                 [
+                   { Markers.table_id = 0; precision = 0; values = lum_quant };
+                   { Markers.table_id = 1; precision = 0; values = chr_quant };
+                 ]);
+            Markers.SOF0
+              {
+                frame_type = Markers.Baseline;
+                precision = 8;
+                height;
+                width;
+                components = frame_components;
+              };
+            Markers.DHT
+              (if is_grayscale then
+                 [
+                   {
+                     table_class = 0;
+                     table_id = 0;
+                     counts = Huffman.std_dc_luminance_counts;
+                     values = Huffman.std_dc_luminance_values;
+                   };
+                   {
+                     table_class = 1;
+                     table_id = 0;
+                     counts = Huffman.std_ac_luminance_counts;
+                     values = Huffman.std_ac_luminance_values;
+                   };
+                 ]
+               else
+                 [
+                   {
+                     table_class = 0;
+                     table_id = 0;
+                     counts = Huffman.std_dc_luminance_counts;
+                     values = Huffman.std_dc_luminance_values;
+                   };
+                   {
+                     table_class = 1;
+                     table_id = 0;
+                     counts = Huffman.std_ac_luminance_counts;
+                     values = Huffman.std_ac_luminance_values;
+                   };
+                   {
+                     table_class = 0;
+                     table_id = 1;
+                     counts = Huffman.std_dc_chrominance_counts;
+                     values = Huffman.std_dc_chrominance_values;
+                   };
+                   {
+                     table_class = 1;
+                     table_id = 1;
+                     counts = Huffman.std_ac_chrominance_counts;
+                     values = Huffman.std_ac_chrominance_values;
+                   };
+                 ]);
+            Markers.SOS
+              ({ scan_components; ss = 0; se = 63; ah = 0; al = 0 }, scan_data);
+            Markers.EOI;
+          ]
+      in
+      Markers.write_markers markers
+  | Progressive ->
+      (* Progressive encoding: multiple scans *)
+      let scans =
+        if is_grayscale then grayscale_progressive_scans
+        else default_progressive_scans
+      in
+      let dc_tables = [| dc_lum; dc_chr |] in
+      let ac_tables = [| ac_lum; ac_chr |] in
+
+      (* Build initial markers *)
+      let initial_markers =
+        [
+          Markers.SOI;
+          Markers.APP0
+            {
+              version_major = 1;
+              version_minor = 1;
+              density_units = 0;
+              x_density = 1;
+              y_density = 1;
+              thumbnail_width = 0;
+              thumbnail_height = 0;
+            };
+        ]
+        @ (match image.exif with
+          | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
+          | None -> [])
+        @ [
+            Markers.DQT
+              (if is_grayscale then
+                 [ { Markers.table_id = 0; precision = 0; values = lum_quant } ]
+               else
+                 [
+                   { Markers.table_id = 0; precision = 0; values = lum_quant };
+                   { Markers.table_id = 1; precision = 0; values = chr_quant };
+                 ]);
+            Markers.SOF2
+              {
+                frame_type = Markers.Progressive;
+                precision = 8;
+                height;
+                width;
+                components = frame_components;
+              };
+            (* All Huffman tables upfront *)
+            Markers.DHT
+              (if is_grayscale then
+                 [
+                   {
+                     table_class = 0;
+                     table_id = 0;
+                     counts = Huffman.std_dc_luminance_counts;
+                     values = Huffman.std_dc_luminance_values;
+                   };
+                   {
+                     table_class = 1;
+                     table_id = 0;
+                     counts = Huffman.std_ac_luminance_counts;
+                     values = Huffman.std_ac_luminance_values;
+                   };
+                 ]
+               else
+                 [
+                   {
+                     table_class = 0;
+                     table_id = 0;
+                     counts = Huffman.std_dc_luminance_counts;
+                     values = Huffman.std_dc_luminance_values;
+                   };
+                   {
+                     table_class = 1;
+                     table_id = 0;
+                     counts = Huffman.std_ac_luminance_counts;
+                     values = Huffman.std_ac_luminance_values;
+                   };
+                   {
+                     table_class = 0;
+                     table_id = 1;
+                     counts = Huffman.std_dc_chrominance_counts;
+                     values = Huffman.std_dc_chrominance_values;
+                   };
+                   {
+                     table_class = 1;
+                     table_id = 1;
+                     counts = Huffman.std_ac_chrominance_counts;
+                     values = Huffman.std_ac_chrominance_values;
+                   };
+                 ]);
+          ]
+      in
+
+      (* Encode each scan *)
+      let scan_markers =
+        List.map
+          (fun scan_spec ->
+            let is_dc_scan = scan_spec.ss = 0 && scan_spec.se = 0 in
+            let scan_data =
+              if is_dc_scan then
+                encode_progressive_dc_scan coefficients h_blocks num_blocks
+                  dc_tables scan_spec mcu_h mcu_v y_h_sampling y_v_sampling
+                  cb_h_sampling cb_v_sampling
+              else
+                encode_progressive_ac_scan coefficients h_blocks num_blocks
+                  ac_tables scan_spec mcu_h mcu_v y_h_sampling y_v_sampling
+                  cb_h_sampling cb_v_sampling
+            in
+            let scan_components =
+              Array.of_list
+                (List.map
+                   (fun ci ->
+                     let dc_tbl = if ci = 0 then 0 else 1 in
+                     let ac_tbl = if ci = 0 then 0 else 1 in
+                     {
+                       Markers.selector = ci + 1;
+                       dc_table = dc_tbl;
+                       ac_table = ac_tbl;
+                     })
+                   scan_spec.components)
+            in
+            Markers.SOS
+              ( {
+                  scan_components;
+                  ss = scan_spec.ss;
+                  se = scan_spec.se;
+                  ah = scan_spec.ah;
+                  al = scan_spec.al;
+                },
+                scan_data ))
+          scans
+      in
+
+      let all_markers = initial_markers @ scan_markers @ [ Markers.EOI ] in
+      Markers.write_markers all_markers
+
+(** Encode JPEG with options to file *)
+let write_with_options options filename image =
+  let data = write_bytes_with_options options image in
+  let oc = open_out_bin filename in
+  output_bytes oc data;
+  close_out oc
 
 (** Encode JPEG to bytes *)
 let write_bytes ?(quality = 75) image =
