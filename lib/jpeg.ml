@@ -74,6 +74,8 @@ type decode_state = {
   mutable quant_tables : Markers.quant_table array;
   mutable dc_tables : Huffman.table array;
   mutable ac_tables : Huffman.table array;
+  mutable arith_dc_conditioning : int array;  (* L values for DC *)
+  mutable arith_ac_conditioning : int array;  (* Kx values for AC *)
   mutable restart_interval : int;
   mutable exif : Exif.t option;
 }
@@ -357,6 +359,8 @@ let create_decode_state () =
         { Markers.table_id = 0; precision = 0; values = Array.make 64 16 };
     dc_tables = Array.make 4 (Huffman.std_dc_luminance_table ());
     ac_tables = Array.make 4 (Huffman.std_ac_luminance_table ());
+    arith_dc_conditioning = Array.make 4 0;   (* Default L=0 *)
+    arith_ac_conditioning = Array.make 4 5;   (* Default Kx=5 *)
     restart_interval = 0;
     exif = None;
   }
@@ -383,6 +387,17 @@ let process_markers markers =
               let table = Huffman.build_table ht.counts ht.values in
               if ht.table_class = 0 then state.dc_tables.(ht.table_id) <- table
               else state.ac_tables.(ht.table_id) <- table)
+            tables
+      | Markers.DAC tables ->
+          (* Process arithmetic conditioning tables *)
+          List.iter
+            (fun (ac : Markers.arithmetic_conditioning) ->
+              if ac.table_class = 0 then
+                (* DC conditioning: L value *)
+                state.arith_dc_conditioning.(ac.table_id) <- ac.conditioning_value
+              else
+                (* AC conditioning: Kx value *)
+                state.arith_ac_conditioning.(ac.table_id) <- ac.conditioning_value)
             tables
       | Markers.DRI interval -> state.restart_interval <- interval
       | Markers.APP1 data -> state.exif <- Some (Exif.parse data)
@@ -655,6 +670,342 @@ let reconstruct_image frame component_blocks =
     (pixels, RGB24)
   end
 
+(* ============================================================================
+   Arithmetic Coding Decoder (for SOF9 and SOF10)
+   ============================================================================ *)
+
+(** Decode a single 8x8 block using arithmetic coding *)
+let decode_arith_block arith_state component_idx quant_table =
+  (* Decode coefficients using arithmetic coder *)
+  let coeffs = Arithmetic.decode_arith_block arith_state component_idx in
+
+  (* Dequantize *)
+  let dequant = Quantization.dequantize coeffs quant_table.Markers.values in
+
+  (* Apply IDCT *)
+  let spatial = Dct.idct dequant in
+
+  (* Level shift and clamp *)
+  Color.level_shift_block_up spatial
+
+(** Decode interleaved arithmetic scan (multiple components) *)
+let decode_arith_interleaved_scan entropy_data frame scan state =
+  let num_components = Array.length scan.Markers.scan_components in
+  let components = frame.Markers.components in
+
+  (* Calculate MCU dimensions based on max sampling factors *)
+  let _, _, _, _, mcus_x, mcus_y = calculate_mcu_dimensions frame in
+
+  (* Initialize arithmetic decoder *)
+  let arith_state = Arithmetic.init_arith_scan_decoder entropy_data num_components in
+
+  (* Set conditioning values from DAC markers *)
+  for ci = 0 to num_components - 1 do
+    let scan_comp = scan.Markers.scan_components.(ci) in
+    Arithmetic.set_conditioning arith_state ci true
+      state.arith_dc_conditioning.(scan_comp.Markers.dc_table);
+    Arithmetic.set_conditioning arith_state ci false
+      state.arith_ac_conditioning.(scan_comp.Markers.ac_table)
+  done;
+
+  (* Allocate block storage for each component *)
+  let component_blocks =
+    Array.init num_components (fun i ->
+        let comp = components.(i) in
+        let h_blocks = mcus_x * comp.Markers.h_sampling in
+        let v_blocks = mcus_y * comp.Markers.v_sampling in
+        Array.make (h_blocks * v_blocks) (Array.make 64 0))
+  in
+
+  (* Decode MCUs *)
+  let mcu_count = ref 0 in
+
+  for mcu_y = 0 to mcus_y - 1 do
+    for mcu_x = 0 to mcus_x - 1 do
+      (* Check for restart marker *)
+      if
+        state.restart_interval > 0 && !mcu_count > 0
+        && !mcu_count mod state.restart_interval = 0
+      then begin
+        Arithmetic.reset_arith_decoder arith_state
+      end;
+
+      (* Decode each component's blocks within this MCU *)
+      for ci = 0 to num_components - 1 do
+        let comp = components.(ci) in
+        let quant_table = state.quant_tables.(comp.Markers.quant_table_id) in
+
+        let h_blocks_total = mcus_x * comp.Markers.h_sampling in
+
+        for v = 0 to comp.Markers.v_sampling - 1 do
+          for h = 0 to comp.Markers.h_sampling - 1 do
+            let bx = (mcu_x * comp.Markers.h_sampling) + h in
+            let by = (mcu_y * comp.Markers.v_sampling) + v in
+            let block_idx = (by * h_blocks_total) + bx in
+
+            let block = decode_arith_block arith_state ci quant_table in
+            component_blocks.(ci).(block_idx) <- block
+          done
+        done
+      done;
+
+      incr mcu_count
+    done
+  done;
+
+  component_blocks
+
+(** Decode arithmetic baseline JPEG (SOF9 - single scan) *)
+let decode_arith_baseline markers frame state =
+  (* Find and decode scan data *)
+  let scan_data =
+    List.find_map
+      (fun m ->
+        match m with
+        | Markers.SOS (header, data) -> Some (header, data)
+        | _ -> None)
+      markers
+  in
+
+  match scan_data with
+  | None -> failwith "No scan data found"
+  | Some (scan_header, entropy_data) ->
+      let component_blocks =
+        decode_arith_interleaved_scan entropy_data frame scan_header state
+      in
+      reconstruct_image frame component_blocks
+
+(** Initialize arithmetic progressive state *)
+let init_arith_progressive_state frame mcus_x mcus_y =
+  let num_components = Array.length frame.Markers.components in
+  let coefficients =
+    Array.init num_components (fun ci ->
+        let comp = frame.Markers.components.(ci) in
+        let h_blocks = mcus_x * comp.Markers.h_sampling in
+        let v_blocks = mcus_y * comp.Markers.v_sampling in
+        let num_blocks = h_blocks * v_blocks in
+        Array.init num_blocks (fun _ -> Array.make 64 0))
+  in
+  coefficients
+
+(** Decode arithmetic DC scan (first or refining) *)
+let decode_arith_dc_scan entropy_data frame scan state coefficients mcus_x mcus_y =
+  let num_scan_components = Array.length scan.Markers.scan_components in
+  let components = frame.Markers.components in
+  let al = scan.Markers.al in
+
+  (* Initialize arithmetic decoder for this scan *)
+  let arith_state = Arithmetic.init_arith_scan_decoder entropy_data num_scan_components in
+
+  (* Set conditioning values *)
+  for sci = 0 to num_scan_components - 1 do
+    let scan_comp = scan.Markers.scan_components.(sci) in
+    Arithmetic.set_conditioning arith_state sci true
+      state.arith_dc_conditioning.(scan_comp.Markers.dc_table)
+  done;
+
+  let mcu_count = ref 0 in
+
+  for mcu_y = 0 to mcus_y - 1 do
+    for mcu_x = 0 to mcus_x - 1 do
+      if
+        state.restart_interval > 0 && !mcu_count > 0
+        && !mcu_count mod state.restart_interval = 0
+      then
+        Arithmetic.reset_arith_decoder arith_state;
+
+      for sci = 0 to num_scan_components - 1 do
+        let scan_comp = scan.Markers.scan_components.(sci) in
+        let ci = find_component_index components scan_comp.Markers.selector in
+        let comp = components.(ci) in
+
+        let h_blocks_total = mcus_x * comp.Markers.h_sampling in
+
+        for v = 0 to comp.Markers.v_sampling - 1 do
+          for h = 0 to comp.Markers.h_sampling - 1 do
+            let bx = (mcu_x * comp.Markers.h_sampling) + h in
+            let by = (mcu_y * comp.Markers.v_sampling) + v in
+            let block_idx = (by * h_blocks_total) + bx in
+
+            (* Decode DC coefficient *)
+            let dc_bins = arith_state.Arithmetic.dc_bins.(sci) in
+            let prev_dc = arith_state.Arithmetic.prev_dc.(sci) in
+            let l = arith_state.Arithmetic.l.(sci) in
+            let dc_diff = Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins prev_dc l in
+            let dc_value = prev_dc + dc_diff in
+            arith_state.Arithmetic.prev_dc.(sci) <- dc_value;
+
+            (* Apply successive approximation *)
+            coefficients.(ci).(block_idx).(0) <- dc_value lsl al
+          done
+        done
+      done;
+
+      incr mcu_count
+    done
+  done
+
+(** Decode arithmetic AC scan *)
+let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x mcus_y =
+  let num_scan_components = Array.length scan.Markers.scan_components in
+  let components = frame.Markers.components in
+  let ss = scan.Markers.ss in
+  let se = scan.Markers.se in
+  let al = scan.Markers.al in
+
+  (* Initialize arithmetic decoder *)
+  let arith_state = Arithmetic.init_arith_scan_decoder entropy_data num_scan_components in
+
+  (* Set conditioning values *)
+  for sci = 0 to num_scan_components - 1 do
+    let scan_comp = scan.Markers.scan_components.(sci) in
+    Arithmetic.set_conditioning arith_state sci false
+      state.arith_ac_conditioning.(scan_comp.Markers.ac_table)
+  done;
+
+  let mcu_count = ref 0 in
+
+  for mcu_y = 0 to mcus_y - 1 do
+    for mcu_x = 0 to mcus_x - 1 do
+      if
+        state.restart_interval > 0 && !mcu_count > 0
+        && !mcu_count mod state.restart_interval = 0
+      then
+        Arithmetic.reset_arith_decoder arith_state;
+
+      for sci = 0 to num_scan_components - 1 do
+        let scan_comp = scan.Markers.scan_components.(sci) in
+        let ci = find_component_index components scan_comp.Markers.selector in
+        let comp = components.(ci) in
+
+        let h_blocks_total = mcus_x * comp.Markers.h_sampling in
+
+        for v = 0 to comp.Markers.v_sampling - 1 do
+          for h = 0 to comp.Markers.h_sampling - 1 do
+            let bx = (mcu_x * comp.Markers.h_sampling) + h in
+            let by = (mcu_y * comp.Markers.v_sampling) + v in
+            let block_idx = (by * h_blocks_total) + bx in
+            let block_coeffs = coefficients.(ci).(block_idx) in
+
+            (* Decode AC coefficients for this spectral range *)
+            let ac_bins = arith_state.Arithmetic.ac_bins.(sci) in
+            let kx = arith_state.Arithmetic.kx.(sci) in
+
+            let k = ref ss in
+            while !k <= se do
+              let ki = !k - 1 in
+
+              (* SE: End of block decision *)
+              let eob = Arithmetic.decode_decision ac_bins.Arithmetic.ac_se.(ki)
+                         arith_state.Arithmetic.decoder in
+              if eob = 1 then
+                k := se + 1  (* Exit loop *)
+              else begin
+                (* S0: Is this coefficient zero? *)
+                let is_zero = Arithmetic.decode_decision ac_bins.Arithmetic.ac_s0.(ki)
+                               arith_state.Arithmetic.decoder in
+                if is_zero = 0 then
+                  incr k
+                else begin
+                  (* Non-zero coefficient *)
+                  let sign = Arithmetic.decode_decision ac_bins.Arithmetic.ac_sign.(ki)
+                              arith_state.Arithmetic.decoder in
+                  let mag_ctx = if sign = 0 then ac_bins.Arithmetic.ac_sp.(ki)
+                               else ac_bins.Arithmetic.ac_sn.(ki) in
+
+                  (* Decode magnitude category *)
+                  let rec decode_category sz =
+                    if sz >= 15 || sz > kx then sz
+                    else begin
+                      let continue = Arithmetic.decode_decision mag_ctx
+                                      arith_state.Arithmetic.decoder in
+                      if continue = 0 then sz
+                      else decode_category (sz + 1)
+                    end
+                  in
+                  let category = decode_category 1 in
+
+                  (* Decode magnitude bits *)
+                  let magnitude =
+                    if category <= 1 then 1
+                    else begin
+                      let rec decode_bits acc remaining =
+                        if remaining <= 0 then acc
+                        else begin
+                          let bit = Arithmetic.decode_decision ac_bins.Arithmetic.ac_x1.(ki)
+                                     arith_state.Arithmetic.decoder in
+                          decode_bits ((acc lsl 1) lor bit) (remaining - 1)
+                        end
+                      in
+                      let extra = decode_bits 0 (category - 1) in
+                      (1 lsl (category - 1)) + extra
+                    end
+                  in
+
+                  block_coeffs.(!k) <- (if sign = 0 then magnitude else -magnitude) lsl al;
+                  incr k
+                end
+              end
+            done
+          done
+        done
+      done;
+
+      incr mcu_count
+    done
+  done
+
+(** Decode arithmetic progressive JPEG (SOF10 - multiple scans) *)
+let decode_arith_progressive markers frame state =
+  let _, _, _, _, mcus_x, mcus_y = calculate_mcu_dimensions frame in
+
+  (* Initialize coefficient storage *)
+  let coefficients = init_arith_progressive_state frame mcus_x mcus_y in
+
+  (* Process each scan *)
+  List.iter
+    (fun marker ->
+      match marker with
+      | Markers.DAC tables ->
+          (* Update conditioning values *)
+          List.iter
+            (fun (ac : Markers.arithmetic_conditioning) ->
+              if ac.table_class = 0 then
+                state.arith_dc_conditioning.(ac.table_id) <- ac.conditioning_value
+              else
+                state.arith_ac_conditioning.(ac.table_id) <- ac.conditioning_value)
+            tables
+      | Markers.SOS (scan_header, entropy_data) ->
+          let is_dc_scan = scan_header.Markers.ss = 0 && scan_header.Markers.se = 0 in
+          if is_dc_scan then
+            decode_arith_dc_scan entropy_data frame scan_header state coefficients mcus_x mcus_y
+          else
+            decode_arith_ac_scan entropy_data frame scan_header state coefficients mcus_x mcus_y
+      | _ -> ())
+    markers;
+
+  (* Finalize: dequantize and IDCT all blocks *)
+  let num_components = Array.length frame.Markers.components in
+  let component_blocks =
+    Array.init num_components (fun ci ->
+        let comp = frame.Markers.components.(ci) in
+        let h_blocks = mcus_x * comp.Markers.h_sampling in
+        let v_blocks = mcus_y * comp.Markers.v_sampling in
+        let num_blocks = h_blocks * v_blocks in
+        let quant_table = state.quant_tables.(comp.Markers.quant_table_id) in
+
+        Array.init num_blocks (fun block_idx ->
+            let coeffs = coefficients.(ci).(block_idx) in
+            (* Dequantize *)
+            let dequant = Quantization.dequantize coeffs quant_table.Markers.values in
+            (* IDCT *)
+            let spatial = Dct.idct dequant in
+            (* Level shift and clamp *)
+            Color.level_shift_block_up spatial))
+  in
+
+  reconstruct_image frame component_blocks
+
 (** Decode baseline JPEG (single scan) *)
 let decode_baseline markers frame state =
   (* Find and decode scan data *)
@@ -726,9 +1077,9 @@ let read_bytes data =
         | Markers.Baseline -> decode_baseline markers frame state
         | Markers.Progressive -> decode_progressive markers frame state
         | Markers.ArithmeticSequential ->
-            failwith "Arithmetic sequential JPEG decoding not yet implemented"
+            decode_arith_baseline markers frame state
         | Markers.ArithmeticProgressive ->
-            failwith "Arithmetic progressive JPEG decoding not yet implemented"
+            decode_arith_progressive markers frame state
       in
 
       {

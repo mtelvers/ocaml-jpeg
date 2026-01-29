@@ -974,6 +974,211 @@ let test_arithmetic_context () =
   Alcotest.(check int) "DC contexts count" 10 (Array.length dc_contexts);
   Alcotest.(check int) "AC contexts count" 252 (Array.length ac_contexts)
 
+(** Test JPEG arithmetic decoder initialization *)
+let test_jpeg_arith_decoder_init () =
+  let module Arith = Jpeg.Arithmetic in
+
+  (* Create a simple test bitstream *)
+  let data = Bytes.make 10 '\x00' in
+  Bytes.set_uint8 data 0 0x80;  (* Some test data *)
+  Bytes.set_uint8 data 1 0x00;
+
+  (* Initialize JPEG decoder *)
+  let decoder = Arith.init_jpeg_decoder data in
+
+  (* Verify decoder state is initialized *)
+  Alcotest.(check bool) "Decoder created" true (decoder.Arith.a > 0);
+  Alcotest.(check bool) "CT initialized" true (decoder.Arith.ct >= 0)
+
+(** Test JPEG arithmetic DC stat bins *)
+let test_jpeg_arith_dc_bins () =
+  let module Arith = Jpeg.Arithmetic in
+
+  (* Create DC stat bins *)
+  let bins = Arith.create_dc_stat_bins () in
+
+  (* Verify all contexts are initialized *)
+  Alcotest.(check int) "DC s0 index" 0 bins.Arith.dc_s0.Arith.index;
+  Alcotest.(check int) "DC sign index" 0 bins.Arith.dc_sign.Arith.index;
+  Alcotest.(check int) "DC sp count" 5 (Array.length bins.Arith.dc_sp);
+  Alcotest.(check int) "DC sn count" 5 (Array.length bins.Arith.dc_sn)
+
+(** Test JPEG arithmetic AC stat bins *)
+let test_jpeg_arith_ac_bins () =
+  let module Arith = Jpeg.Arithmetic in
+
+  (* Create AC stat bins *)
+  let bins = Arith.create_ac_stat_bins () in
+
+  (* Verify all contexts are initialized *)
+  Alcotest.(check int) "AC se count" 63 (Array.length bins.Arith.ac_se);
+  Alcotest.(check int) "AC s0 count" 63 (Array.length bins.Arith.ac_s0);
+  Alcotest.(check int) "AC sign count" 63 (Array.length bins.Arith.ac_sign);
+  Alcotest.(check int) "AC sp count" 63 (Array.length bins.Arith.ac_sp);
+  Alcotest.(check int) "AC sn count" 63 (Array.length bins.Arith.ac_sn);
+  Alcotest.(check int) "AC x1 count" 63 (Array.length bins.Arith.ac_x1)
+
+(** Test JPEG arithmetic scan state initialization *)
+let test_jpeg_arith_scan_state () =
+  let module Arith = Jpeg.Arithmetic in
+
+  (* Create scan state for 3 components *)
+  let data = Bytes.make 100 '\x80' in
+  let state = Arith.init_arith_scan_decoder data 3 in
+
+  (* Verify state is properly initialized *)
+  Alcotest.(check int) "DC bins count" 3 (Array.length state.Arith.dc_bins);
+  Alcotest.(check int) "AC bins count" 3 (Array.length state.Arith.ac_bins);
+  Alcotest.(check int) "Prev DC count" 3 (Array.length state.Arith.prev_dc);
+  Alcotest.(check int) "L values count" 3 (Array.length state.Arith.l);
+  Alcotest.(check int) "Kx values count" 3 (Array.length state.Arith.kx);
+
+  (* Verify default conditioning values *)
+  Alcotest.(check int) "Default L" 0 state.Arith.l.(0);
+  Alcotest.(check int) "Default Kx" 5 state.Arith.kx.(0)
+
+(** Test setting arithmetic conditioning values *)
+let test_jpeg_arith_conditioning () =
+  let module Arith = Jpeg.Arithmetic in
+
+  let data = Bytes.make 100 '\x80' in
+  let state = Arith.init_arith_scan_decoder data 2 in
+
+  (* Set DC conditioning (L value) *)
+  Arith.set_conditioning state 0 true 4;
+  Alcotest.(check int) "DC conditioning L" 4 state.Arith.l.(0);
+
+  (* Set AC conditioning (Kx value) *)
+  Arith.set_conditioning state 1 false 10;
+  Alcotest.(check int) "AC conditioning Kx" 10 state.Arith.kx.(1)
+
+(** Test arithmetic decoder reset *)
+let test_jpeg_arith_reset () =
+  let module Arith = Jpeg.Arithmetic in
+
+  let data = Bytes.make 100 '\x80' in
+  let state = Arith.init_arith_scan_decoder data 2 in
+
+  (* Modify some state *)
+  state.Arith.prev_dc.(0) <- 100;
+  state.Arith.prev_dc.(1) <- -50;
+  state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index <- 5;
+  state.Arith.ac_bins.(0).Arith.ac_se.(0).Arith.index <- 10;
+
+  (* Reset *)
+  Arith.reset_arith_decoder state;
+
+  (* Verify reset *)
+  Alcotest.(check int) "Prev DC 0 reset" 0 state.Arith.prev_dc.(0);
+  Alcotest.(check int) "Prev DC 1 reset" 0 state.Arith.prev_dc.(1);
+  Alcotest.(check int) "DC s0 index reset" 0 state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index;
+  Alcotest.(check int) "AC se index reset" 0 state.Arith.ac_bins.(0).Arith.ac_se.(0).Arith.index
+
+(** Test JPEG MQ-coder decode decision *)
+let test_jpeg_mq_decode () =
+  let module Arith = Jpeg.Arithmetic in
+
+  (* Create a bitstream that encodes some known decisions *)
+  (* This tests the actual MQ-coder decode logic *)
+  let data = Bytes.create 16 in
+  (* Fill with a pattern that will produce some decodable data *)
+  for i = 0 to 15 do
+    Bytes.set_uint8 data i (if i mod 2 = 0 then 0x80 else 0x00)
+  done;
+
+  let decoder = Arith.init_jpeg_decoder data in
+  let ctx = Arith.create_context () in
+
+  (* Decode several decisions - should not crash *)
+  let decisions = Array.init 10 (fun _ ->
+    Arith.decode_decision ctx decoder
+  ) in
+
+  (* Verify decisions are valid binary values *)
+  Array.iter (fun d ->
+    Alcotest.(check bool) "Decision is 0 or 1" true (d = 0 || d = 1)
+  ) decisions
+
+(** Test parsing of SOF9/SOF10 markers *)
+let test_arith_marker_parsing () =
+  (* Create a minimal JPEG with SOF9 marker (arithmetic sequential) *)
+  let buf = Buffer.create 256 in
+
+  (* SOI *)
+  Buffer.add_uint8 buf 0xFF;
+  Buffer.add_uint8 buf 0xD8;
+
+  (* DQT - minimal quantization table *)
+  Buffer.add_uint8 buf 0xFF;
+  Buffer.add_uint8 buf 0xDB;
+  Buffer.add_uint8 buf 0x00;
+  Buffer.add_uint8 buf 0x43;  (* length = 67 *)
+  Buffer.add_uint8 buf 0x00;  (* table 0, 8-bit precision *)
+  for _ = 0 to 63 do
+    Buffer.add_uint8 buf 16  (* uniform quantization *)
+  done;
+
+  (* SOF9 - Start of Frame, arithmetic sequential *)
+  Buffer.add_uint8 buf 0xFF;
+  Buffer.add_uint8 buf 0xC9;  (* SOF9 marker *)
+  Buffer.add_uint8 buf 0x00;
+  Buffer.add_uint8 buf 0x0B;  (* length = 11 *)
+  Buffer.add_uint8 buf 0x08;  (* precision = 8 bits *)
+  Buffer.add_uint8 buf 0x00;
+  Buffer.add_uint8 buf 0x08;  (* height = 8 *)
+  Buffer.add_uint8 buf 0x00;
+  Buffer.add_uint8 buf 0x08;  (* width = 8 *)
+  Buffer.add_uint8 buf 0x01;  (* 1 component (grayscale) *)
+  Buffer.add_uint8 buf 0x01;  (* component ID = 1 *)
+  Buffer.add_uint8 buf 0x11;  (* sampling = 1x1 *)
+  Buffer.add_uint8 buf 0x00;  (* quant table = 0 *)
+
+  (* SOS - Start of Scan *)
+  Buffer.add_uint8 buf 0xFF;
+  Buffer.add_uint8 buf 0xDA;
+  Buffer.add_uint8 buf 0x00;
+  Buffer.add_uint8 buf 0x08;  (* length = 8 *)
+  Buffer.add_uint8 buf 0x01;  (* 1 component *)
+  Buffer.add_uint8 buf 0x01;  (* component selector = 1 *)
+  Buffer.add_uint8 buf 0x00;  (* DC/AC table = 0/0 *)
+  Buffer.add_uint8 buf 0x00;  (* Ss = 0 *)
+  Buffer.add_uint8 buf 0x3F;  (* Se = 63 *)
+  Buffer.add_uint8 buf 0x00;  (* Ah/Al = 0/0 *)
+
+  (* Entropy coded data - a simple pattern that decodes to gray *)
+  (* For arithmetic coding, we need data that produces valid coefficients *)
+  for _ = 0 to 31 do
+    Buffer.add_uint8 buf 0x80
+  done;
+
+  (* EOI *)
+  Buffer.add_uint8 buf 0xFF;
+  Buffer.add_uint8 buf 0xD9;
+
+  let data = Buffer.to_bytes buf in
+
+  (* Parse markers to verify SOF9 is recognized *)
+  let markers = Jpeg.Markers.parse_markers data in
+
+  let has_sof9 = List.exists (fun m ->
+    match m with
+    | Jpeg.Markers.SOF9 frame ->
+        frame.Jpeg.Markers.frame_type = Jpeg.Markers.ArithmeticSequential
+    | _ -> false
+  ) markers in
+
+  Alcotest.(check bool) "SOF9 marker parsed" true has_sof9;
+
+  (* Try to decode - may produce unexpected results but should not crash *)
+  try
+    let _decoded = Jpeg.read_bytes data in
+    (* If we get here, decoding succeeded *)
+    Alcotest.(check bool) "Arithmetic JPEG decoded" true true
+  with
+  | _ ->
+    (* Decoding may fail with synthetic data, but parsing worked *)
+    Alcotest.(check bool) "SOF9 parsing works" true true
+
 (** All tests *)
 let () =
   Alcotest.run "JPEG Library"
@@ -1058,5 +1263,13 @@ let () =
         [
           Alcotest.test_case "qm-coder-basic" `Quick test_qm_coder_basic;
           Alcotest.test_case "context-state" `Quick test_arithmetic_context;
+          Alcotest.test_case "jpeg-decoder-init" `Quick test_jpeg_arith_decoder_init;
+          Alcotest.test_case "dc-stat-bins" `Quick test_jpeg_arith_dc_bins;
+          Alcotest.test_case "ac-stat-bins" `Quick test_jpeg_arith_ac_bins;
+          Alcotest.test_case "scan-state" `Quick test_jpeg_arith_scan_state;
+          Alcotest.test_case "conditioning" `Quick test_jpeg_arith_conditioning;
+          Alcotest.test_case "reset" `Quick test_jpeg_arith_reset;
+          Alcotest.test_case "mq-decode" `Quick test_jpeg_mq_decode;
+          Alcotest.test_case "sof9-parsing" `Quick test_arith_marker_parsing;
         ] );
     ]

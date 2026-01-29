@@ -1,11 +1,12 @@
-(** Arithmetic coding for JPEG (QM-Coder per ISO 10918-2)
+(** Arithmetic coding for JPEG (MQ-Coder per ITU-T T.81 / ISO 10918-1)
 
-    The QM-coder is a binary arithmetic coder used in JPEG arithmetic mode. It
-    uses adaptive probability estimation with 113 states. *)
+    The MQ-coder is a binary arithmetic coder used in JPEG arithmetic mode. It
+    uses adaptive probability estimation with 113 states and operates on 16-bit
+    precision intervals. *)
 
-(** QM-Coder probability state table (from ISO 10918-2 Table D.2). Each entry is
+(** QM-Coder probability state table (from ITU-T T.81 Table D.3). Each entry is
     (Qe value, NMPS index, NLPS index, switch flag). Qe is the probability
-    estimate for the LPS (less probable symbol). *)
+    estimate for the LPS (less probable symbol) scaled to 16 bits. *)
 let qm_table =
   [|
     (* Index 0-9 *)
@@ -164,6 +165,432 @@ type context = {
 (** Create a new context with initial state *)
 let create_context () = { index = 0; mps = 0 }
 
+(** Create a context with a specific initial index (for conditioning) *)
+let create_context_with_index idx = { index = idx; mps = 0 }
+
+(* ============================================================================
+   JPEG MQ-Coder Decoder (ITU-T T.81 Annex D)
+
+   Uses 16-bit precision with:
+   - A: interval size (0x8000 to 0xFFFF after normalization)
+   - C: code register (32 bits, upper 16 bits are active)
+   - CT: bit counter for renormalization
+   ============================================================================ *)
+
+type jpeg_decoder_state = {
+  mutable a : int;         (* Interval register, 16-bit *)
+  mutable c : int;         (* Code register, 32-bit (using lower bits) *)
+  mutable ct : int;        (* Bit counter *)
+  mutable data : bytes;    (* Input data *)
+  mutable pos : int;       (* Current byte position *)
+  mutable buffer : int;    (* Current byte buffer *)
+  mutable next_byte : int; (* Next byte (for marker detection) *)
+}
+(** JPEG arithmetic decoder state per ITU-T T.81 *)
+
+(** Read a byte from input, handling byte stuffing (FF00 -> FF) *)
+let read_byte_stuffed state =
+  if state.pos >= Bytes.length state.data then
+    0xFF  (* Pad with 0xFF at end *)
+  else begin
+    let b = Bytes.get_uint8 state.data state.pos in
+    state.pos <- state.pos + 1;
+    (* Handle byte stuffing: after 0xFF, skip the 0x00 *)
+    if b = 0xFF && state.pos < Bytes.length state.data then begin
+      let next = Bytes.get_uint8 state.data state.pos in
+      if next = 0x00 then
+        state.pos <- state.pos + 1  (* Skip stuffed byte *)
+      (* If next is a marker (not 0x00), we've hit the end of entropy data *)
+    end;
+    b
+  end
+
+(** Initialize the JPEG arithmetic decoder (INITDEC procedure from T.81 D.2.6) *)
+let init_jpeg_decoder data =
+  let state = {
+    a = 0;
+    c = 0;
+    ct = 0;
+    data;
+    pos = 0;
+    buffer = 0;
+    next_byte = 0;
+  } in
+
+  (* Read first two bytes into C register *)
+  let b1 = read_byte_stuffed state in
+  let b2 = read_byte_stuffed state in
+
+  (* C = (B1 << 8) | B2, shifted left by 16 for 32-bit register *)
+  state.c <- ((b1 lsl 8) lor b2) lsl 16;
+
+  (* Initialize A to 0x10000 (will be normalized) *)
+  state.a <- 0x10000;
+
+  (* CT = 0 initially, first renormalization will set it up *)
+  state.ct <- 0;
+
+  (* Perform initial renormalization to get A into proper range *)
+  (* Actually per spec, we need to do BYTEIN first *)
+  state.ct <- 16;  (* We've already read 16 bits *)
+
+  state
+
+(** Byte-in procedure (BYTEIN from T.81 D.2.7) - shift in new byte when needed *)
+let bytein state =
+  if state.pos < Bytes.length state.data then begin
+    let b = Bytes.get_uint8 state.data state.pos in
+    state.pos <- state.pos + 1;
+
+    if state.buffer = 0xFF then begin
+      (* Previous byte was FF - check for stuffing or marker *)
+      if b = 0x00 then begin
+        (* Stuffed byte: use 0xFF, b becomes part of next byte *)
+        state.c <- state.c + (0xFF00 lsl (8 - state.ct));
+        state.ct <- state.ct + 8
+      end
+      else begin
+        (* Marker detected - don't consume, just pad with zeros *)
+        state.pos <- state.pos - 1;  (* Put back the marker byte *)
+        state.c <- state.c + (0xFF00 lsl (8 - state.ct));
+        state.ct <- state.ct + 8
+      end
+    end
+    else begin
+      state.c <- state.c + (b lsl (8 - state.ct));
+      state.ct <- state.ct + 8
+    end;
+    state.buffer <- b
+  end
+  else begin
+    (* End of data - pad with 0xFF *)
+    state.c <- state.c + (0xFF lsl (8 - state.ct));
+    state.ct <- state.ct + 8;
+    state.buffer <- 0xFF
+  end
+
+(** Renormalize decoder (RENORMD from T.81 D.2.5) *)
+let renormd state =
+  while state.a < 0x8000 do
+    if state.ct = 0 then bytein state;
+    state.a <- state.a lsl 1;
+    state.c <- state.c lsl 1;
+    state.ct <- state.ct - 1
+  done;
+  (* Keep C in 32-bit range *)
+  state.c <- state.c land 0xFFFFFFFF
+
+(** Decode a single binary decision (DECODE from T.81 D.2.4) *)
+let decode_decision ctx state =
+  let qe = get_qe ctx.index in
+
+  (* A = A - Qe *)
+  state.a <- state.a - qe;
+
+  (* Chigh = C >> 16 (upper 16 bits of C) *)
+  let chigh = state.c lsr 16 in
+
+  let d =
+    if chigh < state.a then begin
+      (* MPS path *)
+      if state.a < 0x8000 then begin
+        (* Conditional exchange *)
+        if state.a < qe then begin
+          (* LPS and MPS exchange *)
+          let result = 1 - ctx.mps in
+          if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
+          ctx.index <- get_nlps ctx.index;
+          result
+        end
+        else begin
+          ctx.index <- get_nmps ctx.index;
+          ctx.mps
+        end
+      end
+      else begin
+        (* No renormalization needed, definitely MPS *)
+        ctx.mps
+      end
+    end
+    else begin
+      (* LPS path: C >= A *)
+      (* C = C - (A << 16) *)
+      state.c <- state.c - (state.a lsl 16);
+
+      if state.a < qe then begin
+        (* Conditional exchange - this is actually MPS *)
+        state.a <- qe;
+        ctx.index <- get_nmps ctx.index;
+        ctx.mps
+      end
+      else begin
+        (* Normal LPS *)
+        state.a <- qe;
+        let result = 1 - ctx.mps in
+        if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
+        ctx.index <- get_nlps ctx.index;
+        result
+      end
+    end
+  in
+
+  (* Renormalize if needed *)
+  if state.a < 0x8000 then renormd state;
+
+  d
+
+(** Initialize decoder from bitstream reader position *)
+let init_jpeg_decoder_from_reader reader =
+  let data = reader.Bitstream.data in
+  let pos = reader.Bitstream.pos in
+  let remaining = Bytes.sub data pos (Bytes.length data - pos) in
+  init_jpeg_decoder remaining
+
+(* ============================================================================
+   JPEG DC/AC Coefficient Decoding (ITU-T T.81 Annex F.1.4)
+
+   DC and AC coefficients use specific coding procedures with multiple
+   context bins based on previous values and coefficient positions.
+   ============================================================================ *)
+
+(** Statistical area for DC (per component, based on conditioning value L) *)
+type dc_stat_bins = {
+  dc_s0 : context;       (* Zero/non-zero decision *)
+  dc_sign : context;     (* Sign decision *)
+  dc_sp : context array; (* Positive magnitude bins (5 bins) *)
+  dc_sn : context array; (* Negative magnitude bins (5 bins) *)
+  dc_x1 : context;       (* LSB extension *)
+  dc_x2 : context;       (* V continuation *)
+}
+
+(** Create DC statistical bins for one component *)
+let create_dc_stat_bins () = {
+  dc_s0 = create_context ();
+  dc_sign = create_context ();
+  dc_sp = Array.init 5 (fun _ -> create_context ());
+  dc_sn = Array.init 5 (fun _ -> create_context ());
+  dc_x1 = create_context ();
+  dc_x2 = create_context ();
+}
+
+(** Statistical bins for AC coefficients *)
+type ac_stat_bins = {
+  ac_se : context array;  (* EOB decision bins (63 bins for k=1..63) *)
+  ac_s0 : context array;  (* Zero/non-zero (63 bins) *)
+  ac_sign : context array; (* Sign (63 bins) *)
+  ac_sp : context array;  (* Positive magnitude *)
+  ac_sn : context array;  (* Negative magnitude *)
+  ac_x1 : context array;  (* LSB extension *)
+  ac_x2 : context array;  (* V extension *)
+}
+
+(** Create AC statistical bins for one component *)
+let create_ac_stat_bins () = {
+  ac_se = Array.init 63 (fun _ -> create_context ());
+  ac_s0 = Array.init 63 (fun _ -> create_context ());
+  ac_sign = Array.init 63 (fun _ -> create_context ());
+  ac_sp = Array.init 63 (fun _ -> create_context ());
+  ac_sn = Array.init 63 (fun _ -> create_context ());
+  ac_x1 = Array.init 63 (fun _ -> create_context ());
+  ac_x2 = Array.init 63 (fun _ -> create_context ());
+}
+
+(** Conditioning value L bounds the context bin selection.
+    Default L=0 means use standard context selection. *)
+let dc_context_bin l diff =
+  if l = 0 then
+    (* Standard: 5 bins based on magnitude *)
+    min 4 (abs diff)
+  else
+    (* With conditioning: bins based on L threshold *)
+    if abs diff <= l then 0
+    else min 4 ((abs diff - l - 1) / (l + 1) + 1)
+
+(** Decode DC difference value (ITU-T T.81 F.1.4.4.1) *)
+let decode_dc_diff state bins prev_diff l =
+  (* Select context bin based on previous difference *)
+  let _ctx_bin = dc_context_bin l prev_diff in
+
+  (* S0: Is the difference zero? *)
+  let is_zero = decode_decision bins.dc_s0 state in
+  if is_zero = 0 then 0
+  else begin
+    (* Sign bit *)
+    let sign = decode_decision bins.dc_sign state in
+    let sign_ctx = if sign = 0 then bins.dc_sp else bins.dc_sn in
+
+    (* Decode magnitude using categories *)
+    (* First, decode the category (number of bits needed) *)
+    let rec decode_category sz =
+      if sz >= 15 then sz  (* Max category *)
+      else begin
+        let continue = decode_decision sign_ctx.(min sz 4) state in
+        if continue = 0 then sz
+        else decode_category (sz + 1)
+      end
+    in
+    let category = decode_category 1 in
+
+    (* Decode the magnitude bits *)
+    let magnitude =
+      if category <= 1 then 1
+      else begin
+        (* First bit is always 1 (implicit) *)
+        let rec decode_bits acc remaining =
+          if remaining <= 0 then acc
+          else begin
+            let bit = decode_decision bins.dc_x1 state in
+            decode_bits ((acc lsl 1) lor bit) (remaining - 1)
+          end
+        in
+        (* Decode category-1 additional bits *)
+        let extra_bits = decode_bits 0 (category - 1) in
+        (1 lsl (category - 1)) + extra_bits
+      end
+    in
+
+    if sign = 0 then magnitude else -magnitude
+  end
+
+(** Decode AC coefficients for a block (ITU-T T.81 F.1.4.4.2) *)
+let decode_ac_block state bins kx =
+  let coeffs = Array.make 64 0 in
+  let k = ref 1 in  (* Start at position 1 (DC is position 0) *)
+
+  while !k <= 63 do
+    let ki = !k - 1 in  (* 0-based index for bins *)
+
+    (* SE: End of block decision *)
+    let eob = decode_decision bins.ac_se.(ki) state in
+    if eob = 1 then
+      k := 64  (* Exit loop - rest are zeros *)
+    else begin
+      (* S0: Is this coefficient zero? *)
+      let is_zero = decode_decision bins.ac_s0.(ki) state in
+      if is_zero = 0 then begin
+        (* Zero coefficient, move to next *)
+        incr k
+      end
+      else begin
+        (* Non-zero coefficient *)
+        (* Sign bit *)
+        let sign = decode_decision bins.ac_sign.(ki) state in
+        let mag_ctx = if sign = 0 then bins.ac_sp.(ki) else bins.ac_sn.(ki) in
+
+        (* Decode magnitude category *)
+        let rec decode_category sz =
+          if sz >= 15 then sz
+          else if sz > kx then sz  (* Kx limits max category *)
+          else begin
+            let continue = decode_decision mag_ctx state in
+            if continue = 0 then sz
+            else decode_category (sz + 1)
+          end
+        in
+        let category = decode_category 1 in
+
+        (* Decode magnitude bits *)
+        let magnitude =
+          if category <= 1 then 1
+          else begin
+            let rec decode_bits acc remaining =
+              if remaining <= 0 then acc
+              else begin
+                let bit = decode_decision bins.ac_x1.(ki) state in
+                decode_bits ((acc lsl 1) lor bit) (remaining - 1)
+              end
+            in
+            let extra = decode_bits 0 (category - 1) in
+            (1 lsl (category - 1)) + extra
+          end
+        in
+
+        coeffs.(!k) <- (if sign = 0 then magnitude else -magnitude);
+        incr k
+      end
+    end
+  done;
+
+  coeffs
+
+(* ============================================================================
+   Full JPEG Arithmetic Scan Decoder
+   ============================================================================ *)
+
+(** Arithmetic decoding state for a full scan *)
+type arith_scan_state = {
+  decoder : jpeg_decoder_state;
+  dc_bins : dc_stat_bins array;  (* Per component *)
+  ac_bins : ac_stat_bins array;  (* Per component *)
+  prev_dc : int array;           (* Previous DC values per component *)
+  l : int array;                 (* DC conditioning values per component *)
+  kx : int array;                (* AC conditioning values per component *)
+}
+
+(** Initialize arithmetic scan decoder *)
+let init_arith_scan_decoder data num_components =
+  {
+    decoder = init_jpeg_decoder data;
+    dc_bins = Array.init num_components (fun _ -> create_dc_stat_bins ());
+    ac_bins = Array.init num_components (fun _ -> create_ac_stat_bins ());
+    prev_dc = Array.make num_components 0;
+    l = Array.make num_components 0;   (* Default conditioning *)
+    kx = Array.make num_components 5;  (* Default Kx = 5 *)
+  }
+
+(** Set conditioning values from DAC markers *)
+let set_conditioning state component_idx is_dc value =
+  if is_dc then
+    state.l.(component_idx) <- value
+  else
+    state.kx.(component_idx) <- value
+
+(** Decode a single 8x8 block with arithmetic coding *)
+let decode_arith_block state component_idx =
+  let dc_bins = state.dc_bins.(component_idx) in
+  let ac_bins = state.ac_bins.(component_idx) in
+  let l = state.l.(component_idx) in
+  let kx = state.kx.(component_idx) in
+
+  (* Decode DC difference *)
+  let prev_dc = state.prev_dc.(component_idx) in
+  let dc_diff = decode_dc_diff state.decoder dc_bins prev_dc l in
+  let dc_value = prev_dc + dc_diff in
+  state.prev_dc.(component_idx) <- dc_value;
+
+  (* Decode AC coefficients *)
+  let coeffs = decode_ac_block state.decoder ac_bins kx in
+  coeffs.(0) <- dc_value;
+
+  coeffs
+
+(** Reset decoder state at restart marker *)
+let reset_arith_decoder state =
+  (* Reset DC predictors *)
+  Array.fill state.prev_dc 0 (Array.length state.prev_dc) 0;
+  (* Reset statistical bins to initial state *)
+  Array.iter (fun bins ->
+    bins.dc_s0.index <- 0; bins.dc_s0.mps <- 0;
+    bins.dc_sign.index <- 0; bins.dc_sign.mps <- 0;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.dc_sp;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.dc_sn;
+    bins.dc_x1.index <- 0; bins.dc_x1.mps <- 0;
+    bins.dc_x2.index <- 0; bins.dc_x2.mps <- 0
+  ) state.dc_bins;
+  Array.iter (fun bins ->
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.ac_se;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.ac_s0;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.ac_sign;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.ac_sp;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.ac_sn;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.ac_x1;
+    Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins.ac_x2
+  ) state.ac_bins
+
+(* ============================================================================
+   Legacy encoder interface (kept for compatibility)
+   ============================================================================ *)
+
 (* Use 32-bit precision for the range coder *)
 let precision = 32
 let whole = 1 lsl precision (* 2^32 *)
@@ -185,7 +612,7 @@ type decoder_state = {
   bits : int array;
   mutable bit_pos : int;
 }
-(** Arithmetic decoder state *)
+(** Arithmetic decoder state (legacy) *)
 
 (** Initialize encoder *)
 let init_encoder () = { low = 0; high = whole - 1; pending = 0; output = [] }
@@ -405,8 +832,8 @@ let encode_dc_diff state contexts component_class diff =
     encode_mag mag 2
   end
 
-(** Decode DC difference *)
-let decode_dc_diff state contexts component_class =
+(** Decode DC difference (legacy interface) *)
+let decode_dc_diff_legacy state contexts component_class =
   let sign_ctx = select_dc_context contexts component_class 0 in
   let is_nonzero = decode sign_ctx state in
   if is_nonzero = 0 then 0
@@ -449,8 +876,8 @@ let encode_ac_coeffs state contexts component_class coeffs =
     end
   done
 
-(** Decode AC coefficients *)
-let decode_ac_coeffs state contexts component_class =
+(** Decode AC coefficients (legacy interface) *)
+let decode_ac_coeffs_legacy state contexts component_class =
   let coeffs = Array.make 64 0 in
   let se = ref 0 in
   for k = 1 to 63 do
