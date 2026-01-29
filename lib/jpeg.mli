@@ -3,11 +3,12 @@
     Supported features:
     - Baseline sequential DCT JPEG (SOF0)
     - Progressive DCT JPEG (SOF2)
-    - 8-bit precision
-    - Grayscale and YCbCr color (1 or 3 components)
+    - 8-bit and 12-bit precision
+    - Grayscale, YCbCr, CMYK, and YCCK color (1, 3, or 4 components)
     - Standard Huffman coding
     - All common sampling factors (4:4:4, 4:2:2, 4:2:0)
-    - EXIF metadata parsing and preservation *)
+    - EXIF metadata parsing and preservation
+    - Restart markers *)
 
 (** {1 Internal Modules}
     These modules are exposed for advanced use cases. *)
@@ -22,15 +23,20 @@ module Exif = Exif
 
 (** {1 Types} *)
 
+(** Pixel format for image data *)
+type pixel_format =
+  | RGB24  (** 3 bytes per pixel: R, G, B *)
+  | CMYK32  (** 4 bytes per pixel: C, M, Y, K *)
+
 type pixel_data =
   (int, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
-(** Pixel data stored as RGB24 format in a bigarray. The data is laid out as
-    [R,G,B,R,G,B,...] with one byte per channel. *)
+(** Pixel data stored as RGB24 or CMYK32 format in a bigarray. *)
 
 type image = {
   width : int;
   height : int;
-  pixels : pixel_data;  (** RGB24 format: R,G,B,R,G,B,... *)
+  pixels : pixel_data;
+  pixel_format : pixel_format;
   exif : Exif.t option;
 }
 (** JPEG image with pixel data and optional EXIF metadata. *)
@@ -50,9 +56,13 @@ type subsampling =
 type color_mode =
   | Color
   | Grayscale
+  | CMYK
+  | YCCK
       (** Color modes:
           - [Color]: Full YCbCr color encoding (3 components)
-          - [Grayscale]: Single luminance component only *)
+          - [Grayscale]: Single luminance component only
+          - [CMYK]: 4 components, no conversion (inverted CMYK as used in JPEG)
+          - [YCCK]: CMYK via YCbCr + K, 4 components *)
 
 type encoding_mode =
   | Baseline
@@ -131,11 +141,25 @@ val create_image_with_exif : int -> int -> pixel_data -> Exif.t -> image
 (** [create_image_with_exif width height pixels exif] creates a new image with
     EXIF metadata. *)
 
+val create_cmyk_image : int -> int -> pixel_data -> image
+(** [create_cmyk_image width height pixels] creates a new CMYK image from raw
+    CMYK32 pixel data. The [pixels] bigarray must have length
+    [width * height * 4]. *)
+
 (** {1 Pixel Access} *)
 
 val get_pixel : image -> int -> int -> int * int * int
-(** [get_pixel image x y] returns the (r, g, b) values at position (x, y). *)
+(** [get_pixel image x y] returns the (r, g, b) values at position (x, y). For
+    CMYK images, converts to RGB on the fly. *)
+
+val get_cmyk_pixel : image -> int -> int -> int * int * int * int
+(** [get_cmyk_pixel image x y] returns the (c, m, y, k) values at position (x,
+    y). Only valid for CMYK32 images. *)
 
 val set_pixel : image -> int -> int -> int -> int -> int -> unit
 (** [set_pixel image x y r g b] sets the pixel at position (x, y) to (r, g, b).
-*)
+    Only valid for RGB24 images. *)
+
+val set_cmyk_pixel : image -> int -> int -> int -> int -> int -> int -> unit
+(** [set_cmyk_pixel image x y c m yy k] sets the CMYK pixel at position (x, y).
+    Only valid for CMYK32 images. *)

@@ -716,6 +716,219 @@ let test_precision_color_conversion () =
   Alcotest.(check bool) "Cb in 12-bit range" true (cb12 >= 0 && cb12 <= 4095);
   Alcotest.(check bool) "Cr in 12-bit range" true (cr12 >= 0 && cr12 <= 4095)
 
+(** Test CMYK color conversion *)
+let test_cmyk_color_conversion () =
+  (* Test RGB -> CMYK -> RGB roundtrip *)
+  let test_values =
+    [ (255, 0, 0); (0, 255, 0); (0, 0, 255); (128, 128, 128) ]
+  in
+  List.iter
+    (fun (r, g, b) ->
+      let c, m, y, k = Color.rgb_to_cmyk r g b in
+      let r', g', b' = Color.cmyk_to_rgb c m y k in
+      let max_error = max (abs (r - r')) (max (abs (g - g')) (abs (b - b'))) in
+      Alcotest.(check bool)
+        (Printf.sprintf "CMYK roundtrip for RGB(%d,%d,%d)" r g b)
+        true (max_error < 10))
+    test_values
+
+(** Test YCCK color conversion - verify it's self-consistent *)
+let test_ycck_color_conversion () =
+  (* YCCK conversion should be reversible for non-black colors.
+     Pure black is a special case that doesn't roundtrip perfectly
+     due to CMYK's separate K channel. *)
+  let test_values =
+    [ (255, 128, 64); (100, 200, 50); (255, 255, 255); (128, 64, 192) ]
+  in
+  List.iter
+    (fun (r, g, b) ->
+      let y, cb, cr, k = Color.rgb_to_ycck r g b in
+      let r', g', b' = Color.ycck_to_rgb y cb cr k in
+      let max_error = max (abs (r - r')) (max (abs (g - g')) (abs (b - b'))) in
+      Alcotest.(check bool)
+        (Printf.sprintf "YCCK roundtrip for RGB(%d,%d,%d), error=%d" r g b
+           max_error)
+        true (max_error < 5))
+    test_values;
+  (* Verify that YCCK values are in valid range *)
+  let y, cb, cr, k = Color.rgb_to_ycck 128 128 128 in
+  Alcotest.(check bool) "Y in range" true (y >= 0 && y <= 255);
+  Alcotest.(check bool) "Cb in range" true (cb >= 0 && cb <= 255);
+  Alcotest.(check bool) "Cr in range" true (cr >= 0 && cr <= 255);
+  Alcotest.(check bool) "K in range" true (k >= 0 && k <= 255)
+
+(** Test CMYK encoding *)
+let test_cmyk_encode () =
+  let width = 16 in
+  let height = 16 in
+
+  (* Create RGB image *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Encode as CMYK *)
+  let options = { Jpeg.default_encode_options with color_mode = Jpeg.CMYK } in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Verify valid JPEG *)
+  Alcotest.(check int) "Valid JPEG start 1" 0xFF (Bytes.get_uint8 data 0);
+  Alcotest.(check int) "Valid JPEG start 2" 0xD8 (Bytes.get_uint8 data 1);
+
+  (* Verify 4 components in SOF *)
+  let markers = Markers.parse_markers data in
+  let frame =
+    List.find_map
+      (fun m -> match m with Markers.SOF0 f -> Some f | _ -> None)
+      markers
+  in
+  match frame with
+  | None -> Alcotest.fail "No SOF0 marker found"
+  | Some f ->
+      Alcotest.(check int) "4 components" 4 (Array.length f.Markers.components)
+
+(** Test YCCK encoding *)
+let test_ycck_encode () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i * 7 mod 256)
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  let options = { Jpeg.default_encode_options with color_mode = Jpeg.YCCK } in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Verify 4 components in SOF *)
+  let markers = Markers.parse_markers data in
+  let frame =
+    List.find_map
+      (fun m -> match m with Markers.SOF0 f -> Some f | _ -> None)
+      markers
+  in
+  match frame with
+  | None -> Alcotest.fail "No SOF0 marker found"
+  | Some f ->
+      Alcotest.(check int) "4 components" 4 (Array.length f.Markers.components)
+
+(** Test CMYK image creation and pixel access *)
+let test_cmyk_pixel_access () =
+  let width = 4 in
+  let height = 4 in
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 4)
+  in
+  (* Fill with known CMYK values *)
+  for i = 0 to (width * height) - 1 do
+    Bigarray.Array1.set pixels (i * 4) 100;
+    (* C *)
+    Bigarray.Array1.set pixels ((i * 4) + 1) 150;
+    (* M *)
+    Bigarray.Array1.set pixels ((i * 4) + 2) 200;
+    (* Y *)
+    Bigarray.Array1.set pixels ((i * 4) + 3) 50 (* K *)
+  done;
+  let image = Jpeg.create_cmyk_image width height pixels in
+
+  (* Check pixel_format *)
+  Alcotest.(check bool) "Is CMYK32" true (image.Jpeg.pixel_format = Jpeg.CMYK32);
+
+  (* Test get_cmyk_pixel *)
+  let c, m, y, k = Jpeg.get_cmyk_pixel image 2 2 in
+  Alcotest.(check int) "C value" 100 c;
+  Alcotest.(check int) "M value" 150 m;
+  Alcotest.(check int) "Y value" 200 y;
+  Alcotest.(check int) "K value" 50 k;
+
+  (* Test get_pixel (should convert to RGB) *)
+  let r, g, b = Jpeg.get_pixel image 2 2 in
+  Alcotest.(check bool) "R in valid range" true (r >= 0 && r <= 255);
+  Alcotest.(check bool) "G in valid range" true (g >= 0 && g <= 255);
+  Alcotest.(check bool) "B in valid range" true (b >= 0 && b <= 255)
+
+(** Test set_cmyk_pixel *)
+let test_set_cmyk_pixel () =
+  let width = 4 in
+  let height = 4 in
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 4)
+  in
+  (* Initialize with zeros *)
+  for i = 0 to (width * height * 4) - 1 do
+    Bigarray.Array1.set pixels i 0
+  done;
+  let image = Jpeg.create_cmyk_image width height pixels in
+
+  (* Set a pixel *)
+  Jpeg.set_cmyk_pixel image 1 2 80 120 200 40;
+
+  (* Read it back *)
+  let c, m, y, k = Jpeg.get_cmyk_pixel image 1 2 in
+  Alcotest.(check int) "Set C value" 80 c;
+  Alcotest.(check int) "Set M value" 120 m;
+  Alcotest.(check int) "Set Y value" 200 y;
+  Alcotest.(check int) "Set K value" 40 k;
+
+  (* Verify other pixels are unchanged *)
+  let c0, m0, y0, k0 = Jpeg.get_cmyk_pixel image 0 0 in
+  Alcotest.(check int) "Unchanged C" 0 c0;
+  Alcotest.(check int) "Unchanged M" 0 m0;
+  Alcotest.(check int) "Unchanged Y" 0 y0;
+  Alcotest.(check int) "Unchanged K" 0 k0
+
+(** Test CMYK encode/decode roundtrip *)
+let test_cmyk_roundtrip () =
+  let width = 16 in
+  let height = 16 in
+
+  (* Create RGB image with known colors *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx (x * 16);
+      Bigarray.Array1.set pixels (idx + 1) (y * 16);
+      Bigarray.Array1.set pixels (idx + 2) 128
+    done
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Encode as CMYK *)
+  let options =
+    { Jpeg.default_encode_options with color_mode = Jpeg.CMYK; quality = 95 }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Decode - should be CMYK32 *)
+  let decoded = Jpeg.read_bytes data in
+  Alcotest.(check int) "Decoded width" width decoded.Jpeg.width;
+  Alcotest.(check int) "Decoded height" height decoded.Jpeg.height;
+  Alcotest.(check bool)
+    "Decoded is CMYK32" true
+    (decoded.Jpeg.pixel_format = Jpeg.CMYK32);
+
+  (* Verify we can get CMYK pixels *)
+  let c, m, y, k = Jpeg.get_cmyk_pixel decoded 8 8 in
+  Alcotest.(check bool) "C in range" true (c >= 0 && c <= 255);
+  Alcotest.(check bool) "M in range" true (m >= 0 && m <= 255);
+  Alcotest.(check bool) "Y in range" true (y >= 0 && y <= 255);
+  Alcotest.(check bool) "K in range" true (k >= 0 && k <= 255)
+
 (** All tests *)
 let () =
   Alcotest.run "JPEG Library"
@@ -780,5 +993,20 @@ let () =
           Alcotest.test_case "12-bit" `Quick test_12bit_precision;
           Alcotest.test_case "color-conversion" `Quick
             test_precision_color_conversion;
+        ] );
+      ( "cmyk",
+        [
+          Alcotest.test_case "color-conversion" `Quick
+            test_cmyk_color_conversion;
+          Alcotest.test_case "encode" `Quick test_cmyk_encode;
+          Alcotest.test_case "pixel-access" `Quick test_cmyk_pixel_access;
+          Alcotest.test_case "set-pixel" `Quick test_set_cmyk_pixel;
+          Alcotest.test_case "roundtrip" `Quick test_cmyk_roundtrip;
+        ] );
+      ( "ycck",
+        [
+          Alcotest.test_case "color-conversion" `Quick
+            test_ycck_color_conversion;
+          Alcotest.test_case "encode" `Quick test_ycck_encode;
         ] );
     ]

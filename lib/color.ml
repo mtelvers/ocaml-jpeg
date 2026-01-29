@@ -271,3 +271,136 @@ let upsample_420_bilinear plane orig_width orig_height new_width new_height =
   done;
 
   result
+
+(* === CMYK/YCCK Color Conversions === *)
+
+(** Convert RGB to CMYK. Returns (C, M, Y, K) where each component is in 0-255
+    range. Note: JPEG CMYK typically uses inverted values (255-x). *)
+let rgb_to_cmyk r g b =
+  let r' = Float.of_int r /. 255.0 in
+  let g' = Float.of_int g /. 255.0 in
+  let b' = Float.of_int b /. 255.0 in
+  let k = 1.0 -. max r' (max g' b') in
+  if k >= 1.0 then (255, 255, 255, 255) (* Pure black *)
+  else
+    let c = (1.0 -. r' -. k) /. (1.0 -. k) in
+    let m = (1.0 -. g' -. k) /. (1.0 -. k) in
+    let y = (1.0 -. b' -. k) /. (1.0 -. k) in
+    (* JPEG uses inverted CMYK values *)
+    ( clamp_float ((1.0 -. c) *. 255.0),
+      clamp_float ((1.0 -. m) *. 255.0),
+      clamp_float ((1.0 -. y) *. 255.0),
+      clamp_float ((1.0 -. k) *. 255.0) )
+
+(** Convert CMYK to RGB. Input values are in 0-255 range (inverted CMYK as used
+    in JPEG). *)
+let cmyk_to_rgb c m y k =
+  (* Convert from inverted CMYK to standard CMYK *)
+  let c' = (255.0 -. Float.of_int c) /. 255.0 in
+  let m' = (255.0 -. Float.of_int m) /. 255.0 in
+  let y' = (255.0 -. Float.of_int y) /. 255.0 in
+  let k' = (255.0 -. Float.of_int k) /. 255.0 in
+  (* CMYK to RGB conversion *)
+  let r = (1.0 -. c') *. (1.0 -. k') *. 255.0 in
+  let g = (1.0 -. m') *. (1.0 -. k') *. 255.0 in
+  let b = (1.0 -. y') *. (1.0 -. k') *. 255.0 in
+  (clamp_float r, clamp_float g, clamp_float b)
+
+(** Convert RGB to YCCK (YCbCr + K). Returns (Y, Cb, Cr, K) where each component
+    is in 0-255 range. YCCK stores CMY as YCbCr and keeps K separate. Adobe uses
+    inverted CMYK where 255 = no ink, 0 = full ink. *)
+let rgb_to_ycck r g b =
+  (* First convert RGB to inverted CMYK *)
+  let c, m, y_cmyk, k = rgb_to_cmyk r g b in
+  (* Convert CMY (treated as RGB-like values) to YCbCr *)
+  let y_val, cb, cr = rgb_to_ycbcr c m y_cmyk in
+  (y_val, cb, cr, k)
+
+(** Convert YCCK to RGB. Input (Y, Cb, Cr, K) in 0-255 range. *)
+let ycck_to_rgb y cb cr k =
+  (* First convert YCbCr back to CMY values *)
+  let c, m, y_cmyk = ycbcr_to_rgb y cb cr in
+  (* Then convert CMYK to RGB *)
+  cmyk_to_rgb c m y_cmyk k
+
+(** Convert RGB buffer to CMYK planes. Input: RGB24 array (R,G,B,R,G,B,...)
+    Output: (C array, M array, Y array, K array) *)
+let rgb_buffer_to_cmyk pixels width height =
+  let size = width * height in
+  let c_plane = Array.make size 0 in
+  let m_plane = Array.make size 0 in
+  let y_plane = Array.make size 0 in
+  let k_plane = Array.make size 0 in
+
+  for i = 0 to size - 1 do
+    let r = pixels.(i * 3) in
+    let g = pixels.((i * 3) + 1) in
+    let b = pixels.((i * 3) + 2) in
+    let c, m, y, k = rgb_to_cmyk r g b in
+    c_plane.(i) <- c;
+    m_plane.(i) <- m;
+    y_plane.(i) <- y;
+    k_plane.(i) <- k
+  done;
+
+  (c_plane, m_plane, y_plane, k_plane)
+
+(** Convert RGB buffer to YCCK planes. Input: RGB24 array (R,G,B,R,G,B,...)
+    Output: (Y array, Cb array, Cr array, K array) *)
+let rgb_buffer_to_ycck pixels width height =
+  let size = width * height in
+  let y_plane = Array.make size 0 in
+  let cb_plane = Array.make size 0 in
+  let cr_plane = Array.make size 0 in
+  let k_plane = Array.make size 0 in
+
+  for i = 0 to size - 1 do
+    let r = pixels.(i * 3) in
+    let g = pixels.((i * 3) + 1) in
+    let b = pixels.((i * 3) + 2) in
+    let y, cb, cr, k = rgb_to_ycck r g b in
+    y_plane.(i) <- y;
+    cb_plane.(i) <- cb;
+    cr_plane.(i) <- cr;
+    k_plane.(i) <- k
+  done;
+
+  (y_plane, cb_plane, cr_plane, k_plane)
+
+(** Convert CMYK planes to RGB buffer. Input: C, M, Y, K arrays Output: RGB24
+    array (R,G,B,R,G,B,...) *)
+let cmyk_to_rgb_buffer c_plane m_plane y_plane k_plane width height =
+  let size = width * height in
+  let pixels = Array.make (size * 3) 0 in
+
+  for i = 0 to size - 1 do
+    let c = c_plane.(i) in
+    let m = m_plane.(i) in
+    let y = y_plane.(i) in
+    let k = k_plane.(i) in
+    let r, g, b = cmyk_to_rgb c m y k in
+    pixels.(i * 3) <- r;
+    pixels.((i * 3) + 1) <- g;
+    pixels.((i * 3) + 2) <- b
+  done;
+
+  pixels
+
+(** Convert YCCK planes to RGB buffer. Input: Y, Cb, Cr, K arrays Output: RGB24
+    array (R,G,B,R,G,B,...) *)
+let ycck_to_rgb_buffer y_plane cb_plane cr_plane k_plane width height =
+  let size = width * height in
+  let pixels = Array.make (size * 3) 0 in
+
+  for i = 0 to size - 1 do
+    let y = y_plane.(i) in
+    let cb = cb_plane.(i) in
+    let cr = cr_plane.(i) in
+    let k = k_plane.(i) in
+    let r, g, b = ycck_to_rgb y cb cr k in
+    pixels.(i * 3) <- r;
+    pixels.((i * 3) + 1) <- g;
+    pixels.((i * 3) + 2) <- b
+  done;
+
+  pixels

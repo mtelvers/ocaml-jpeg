@@ -9,14 +9,20 @@ module Quantization = Quantization
 module Color = Color
 module Exif = Exif
 
+(** Pixel format for image data *)
+type pixel_format =
+  | RGB24  (** 3 bytes per pixel: R, G, B *)
+  | CMYK32  (** 4 bytes per pixel: C, M, Y, K *)
+
 type pixel_data =
   (int, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
-(** Pixel data stored as RGB24 format *)
+(** Pixel data stored as RGB24 or CMYK32 format *)
 
 type image = {
   width : int;
   height : int;
-  pixels : pixel_data; (* RGB24 format: R,G,B,R,G,B,... *)
+  pixels : pixel_data;
+  pixel_format : pixel_format;
   exif : Exif.t option;
 }
 (** JPEG image *)
@@ -25,7 +31,11 @@ type image = {
 type subsampling = Sub_444 | Sub_422 | Sub_420
 
 (** Color modes *)
-type color_mode = Color | Grayscale
+type color_mode =
+  | Color  (** RGB -> YCbCr, 3 components *)
+  | Grayscale  (** Y only, 1 component *)
+  | CMYK  (** 4 components, no conversion *)
+  | YCCK  (** CMYK via YCbCr + K, 4 components *)
 
 (** Encoding modes *)
 type encoding_mode = Baseline | Progressive
@@ -224,6 +234,21 @@ let find_component_index components selector =
   in
   find 0
 
+(** Calculate MCU dimensions from frame header *)
+let calculate_mcu_dimensions frame =
+  let components = frame.Markers.components in
+  let max_h =
+    Array.fold_left (fun m c -> max m c.Markers.h_sampling) 1 components
+  in
+  let max_v =
+    Array.fold_left (fun m c -> max m c.Markers.v_sampling) 1 components
+  in
+  let mcu_width = max_h * 8 in
+  let mcu_height = max_v * 8 in
+  let mcus_x = (frame.Markers.width + mcu_width - 1) / mcu_width in
+  let mcus_y = (frame.Markers.height + mcu_height - 1) / mcu_height in
+  (max_h, max_v, mcu_width, mcu_height, mcus_x, mcus_y)
+
 (** Decode one progressive scan *)
 let decode_progressive_scan reader frame scan state prog_state mcus_x mcus_y =
   let scan_type = classify_scan scan in
@@ -412,17 +437,7 @@ let decode_interleaved_scan reader frame scan state =
   let components = frame.Markers.components in
 
   (* Calculate MCU dimensions based on max sampling factors *)
-  let max_h =
-    Array.fold_left (fun m c -> max m c.Markers.h_sampling) 1 components
-  in
-  let max_v =
-    Array.fold_left (fun m c -> max m c.Markers.v_sampling) 1 components
-  in
-
-  let mcu_width = max_h * 8 in
-  let mcu_height = max_v * 8 in
-  let mcus_x = (frame.Markers.width + mcu_width - 1) / mcu_width in
-  let mcus_y = (frame.Markers.height + mcu_height - 1) / mcu_height in
+  let _, _, _, _, mcus_x, mcus_y = calculate_mcu_dimensions frame in
 
   (* Allocate block storage for each component *)
   let component_blocks =
@@ -487,21 +502,7 @@ let reconstruct_image frame component_blocks =
   let height = frame.Markers.height in
   let num_components = Array.length frame.Markers.components in
 
-  let max_h =
-    Array.fold_left
-      (fun m c -> max m c.Markers.h_sampling)
-      1 frame.Markers.components
-  in
-  let max_v =
-    Array.fold_left
-      (fun m c -> max m c.Markers.v_sampling)
-      1 frame.Markers.components
-  in
-
-  let mcu_width = max_h * 8 in
-  let mcu_height = max_v * 8 in
-  let mcus_x = (width + mcu_width - 1) / mcu_width in
-  let mcus_y = (height + mcu_height - 1) / mcu_height in
+  let max_h, _, _, _, mcus_x, mcus_y = calculate_mcu_dimensions frame in
 
   (* Create planes from blocks *)
   let planes =
@@ -547,7 +548,55 @@ let reconstruct_image frame component_blocks =
         Bigarray.Array1.set pixels (idx + 2) v
       done
     done;
-    pixels
+    (pixels, RGB24)
+  end
+  else if num_components = 4 then begin
+    (* 4-component: CMYK or YCCK *)
+    let comp0 = frame.Markers.components.(0) in
+    let plane0, p0_width, _ = planes.(0) in
+    let plane1, p1_width, p1_height = planes.(1) in
+    let plane2, p2_width, p2_height = planes.(2) in
+    let plane3, p3_width, p3_height = planes.(3) in
+
+    (* Upsample components 1, 2, 3 if needed *)
+    let full_1 =
+      if p1_width < p0_width then
+        Color.upsample_420_bilinear plane1 p1_width p1_height p0_width
+          (mcus_y * comp0.Markers.v_sampling * 8)
+      else plane1
+    in
+    let full_2 =
+      if p2_width < p0_width then
+        Color.upsample_420_bilinear plane2 p2_width p2_height p0_width
+          (mcus_y * comp0.Markers.v_sampling * 8)
+      else plane2
+    in
+    let full_3 =
+      if p3_width < p0_width then
+        Color.upsample_420_bilinear plane3 p3_width p3_height p0_width
+          (mcus_y * comp0.Markers.v_sampling * 8)
+      else plane3
+    in
+
+    (* Return as CMYK32 - decoder doesn't know if it's CMYK or YCCK *)
+    let pixels =
+      Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+        (width * height * 4)
+    in
+    for y = 0 to height - 1 do
+      for x = 0 to width - 1 do
+        let c = plane0.((y * p0_width) + x) in
+        let m = full_1.((y * p0_width) + x) in
+        let yy = full_2.((y * p0_width) + x) in
+        let k = full_3.((y * p0_width) + x) in
+        let idx = ((y * width) + x) * 4 in
+        Bigarray.Array1.set pixels idx c;
+        Bigarray.Array1.set pixels (idx + 1) m;
+        Bigarray.Array1.set pixels (idx + 2) yy;
+        Bigarray.Array1.set pixels (idx + 3) k
+      done
+    done;
+    (pixels, CMYK32)
   end
   else begin
     (* YCbCr - need to upsample chroma if subsampled *)
@@ -595,7 +644,7 @@ let reconstruct_image frame component_blocks =
         Bigarray.Array1.set pixels (idx + 2) b
       done
     done;
-    pixels
+    (pixels, RGB24)
   end
 
 (** Decode baseline JPEG (single scan) *)
@@ -621,20 +670,8 @@ let decode_baseline markers frame state =
 
 (** Decode progressive JPEG (multiple scans) *)
 let decode_progressive markers frame state =
-  let components = frame.Markers.components in
-
   (* Calculate MCU dimensions *)
-  let max_h =
-    Array.fold_left (fun m c -> max m c.Markers.h_sampling) 1 components
-  in
-  let max_v =
-    Array.fold_left (fun m c -> max m c.Markers.v_sampling) 1 components
-  in
-
-  let mcu_width = max_h * 8 in
-  let mcu_height = max_v * 8 in
-  let mcus_x = (frame.Markers.width + mcu_width - 1) / mcu_width in
-  let mcus_y = (frame.Markers.height + mcu_height - 1) / mcu_height in
+  let _, _, _, _, mcus_x, mcus_y = calculate_mcu_dimensions frame in
 
   (* Initialize progressive state *)
   let prog_state = init_progressive_state frame mcus_x mcus_y in
@@ -676,7 +713,7 @@ let read_bytes data =
       if frame.Markers.precision <> 8 && frame.Markers.precision <> 12 then
         failwith "Only 8-bit and 12-bit precision supported";
 
-      let pixels =
+      let pixels, pixel_format =
         match frame.Markers.frame_type with
         | Markers.Baseline -> decode_baseline markers frame state
         | Markers.Progressive -> decode_progressive markers frame state
@@ -686,6 +723,7 @@ let read_bytes data =
         width = frame.Markers.width;
         height = frame.Markers.height;
         pixels;
+        pixel_format;
         exif = state.exif;
       }
 
@@ -1001,65 +1039,213 @@ let write_bytes_with_options options image =
   let height = image.height in
   let quality = options.quality in
 
-  (* Convert RGB to YCbCr *)
-  let pixels_array =
-    Array.init
-      (width * height * 3)
-      (fun i -> Bigarray.Array1.get image.pixels i)
+  (* Handle different color modes *)
+  let num_components, component_planes, sampling_info =
+    match options.color_mode with
+    | Grayscale ->
+        (* Convert to grayscale: just extract Y *)
+        let pixels_array =
+          match image.pixel_format with
+          | RGB24 ->
+              Array.init
+                (width * height * 3)
+                (fun i -> Bigarray.Array1.get image.pixels i)
+          | CMYK32 ->
+              (* Convert CMYK to RGB first *)
+              let arr = Array.make (width * height * 3) 0 in
+              for i = 0 to (width * height) - 1 do
+                let c = Bigarray.Array1.get image.pixels (i * 4) in
+                let m = Bigarray.Array1.get image.pixels ((i * 4) + 1) in
+                let y = Bigarray.Array1.get image.pixels ((i * 4) + 2) in
+                let k = Bigarray.Array1.get image.pixels ((i * 4) + 3) in
+                let r, g, b = Color.cmyk_to_rgb c m y k in
+                arr.(i * 3) <- r;
+                arr.((i * 3) + 1) <- g;
+                arr.((i * 3) + 2) <- b
+              done;
+              arr
+        in
+        let y_plane, _, _ =
+          Color.rgb_buffer_to_ycbcr pixels_array width height
+        in
+        (1, [| y_plane |], (1, 1, 1, 1, width, height, [||], [||]))
+    | Color ->
+        let pixels_array =
+          match image.pixel_format with
+          | RGB24 ->
+              Array.init
+                (width * height * 3)
+                (fun i -> Bigarray.Array1.get image.pixels i)
+          | CMYK32 ->
+              let arr = Array.make (width * height * 3) 0 in
+              for i = 0 to (width * height) - 1 do
+                let c = Bigarray.Array1.get image.pixels (i * 4) in
+                let m = Bigarray.Array1.get image.pixels ((i * 4) + 1) in
+                let y = Bigarray.Array1.get image.pixels ((i * 4) + 2) in
+                let k = Bigarray.Array1.get image.pixels ((i * 4) + 3) in
+                let r, g, b = Color.cmyk_to_rgb c m y k in
+                arr.(i * 3) <- r;
+                arr.((i * 3) + 1) <- g;
+                arr.((i * 3) + 2) <- b
+              done;
+              arr
+        in
+        let y_plane, cb_plane, cr_plane =
+          Color.rgb_buffer_to_ycbcr pixels_array width height
+        in
+        let info =
+          match options.subsampling with
+          | Sub_444 ->
+              ( 1,
+                1,
+                1,
+                1,
+                width,
+                height,
+                Color.no_subsample cb_plane width height,
+                Color.no_subsample cr_plane width height )
+          | Sub_422 ->
+              let cw = (width + 1) / 2 in
+              ( 2,
+                1,
+                1,
+                1,
+                cw,
+                height,
+                Color.subsample_422 cb_plane width height,
+                Color.subsample_422 cr_plane width height )
+          | Sub_420 ->
+              let cw = (width + 1) / 2 in
+              let ch = (height + 1) / 2 in
+              ( 2,
+                2,
+                1,
+                1,
+                cw,
+                ch,
+                Color.subsample_420 cb_plane width height,
+                Color.subsample_420 cr_plane width height )
+        in
+        let _, _, _, _, _, _, cb_sub, cr_sub = info in
+        (3, [| y_plane; cb_sub; cr_sub |], info)
+    | CMYK ->
+        (* 4 components, no color conversion *)
+        let c_plane = Array.make (width * height) 0 in
+        let m_plane = Array.make (width * height) 0 in
+        let y_plane = Array.make (width * height) 0 in
+        let k_plane = Array.make (width * height) 0 in
+        (match image.pixel_format with
+        | CMYK32 ->
+            for i = 0 to (width * height) - 1 do
+              c_plane.(i) <- Bigarray.Array1.get image.pixels (i * 4);
+              m_plane.(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 1);
+              y_plane.(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 2);
+              k_plane.(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 3)
+            done
+        | RGB24 ->
+            let pixels_array =
+              Array.init
+                (width * height * 3)
+                (fun i -> Bigarray.Array1.get image.pixels i)
+            in
+            for i = 0 to (width * height) - 1 do
+              let r = pixels_array.(i * 3) in
+              let g = pixels_array.((i * 3) + 1) in
+              let b = pixels_array.((i * 3) + 2) in
+              let c, m, y, k = Color.rgb_to_cmyk r g b in
+              c_plane.(i) <- c;
+              m_plane.(i) <- m;
+              y_plane.(i) <- y;
+              k_plane.(i) <- k
+            done);
+        ( 4,
+          [| c_plane; m_plane; y_plane; k_plane |],
+          (1, 1, 1, 1, width, height, [||], [||]) )
+    | YCCK ->
+        (* 4 components via YCbCr + K *)
+        let yy_plane = Array.make (width * height) 0 in
+        let cb_plane = Array.make (width * height) 0 in
+        let cr_plane = Array.make (width * height) 0 in
+        let k_plane = Array.make (width * height) 0 in
+        (match image.pixel_format with
+        | CMYK32 ->
+            for i = 0 to (width * height) - 1 do
+              yy_plane.(i) <- Bigarray.Array1.get image.pixels (i * 4);
+              cb_plane.(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 1);
+              cr_plane.(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 2);
+              k_plane.(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 3)
+            done
+        | RGB24 ->
+            let pixels_array =
+              Array.init
+                (width * height * 3)
+                (fun i -> Bigarray.Array1.get image.pixels i)
+            in
+            for i = 0 to (width * height) - 1 do
+              let r = pixels_array.(i * 3) in
+              let g = pixels_array.((i * 3) + 1) in
+              let b = pixels_array.((i * 3) + 2) in
+              let y, cb, cr, k = Color.rgb_to_ycck r g b in
+              yy_plane.(i) <- y;
+              cb_plane.(i) <- cb;
+              cr_plane.(i) <- cr;
+              k_plane.(i) <- k
+            done);
+        let info =
+          match options.subsampling with
+          | Sub_444 ->
+              ( 1,
+                1,
+                1,
+                1,
+                width,
+                height,
+                Color.no_subsample cb_plane width height,
+                Color.no_subsample cr_plane width height )
+          | Sub_422 ->
+              let cw = (width + 1) / 2 in
+              ( 2,
+                1,
+                1,
+                1,
+                cw,
+                height,
+                Color.subsample_422 cb_plane width height,
+                Color.subsample_422 cr_plane width height )
+          | Sub_420 ->
+              let cw = (width + 1) / 2 in
+              let ch = (height + 1) / 2 in
+              ( 2,
+                2,
+                1,
+                1,
+                cw,
+                ch,
+                Color.subsample_420 cb_plane width height,
+                Color.subsample_420 cr_plane width height )
+        in
+        let y_hs, y_vs, cb_hs, cb_vs, cw, ch, cb_sub, cr_sub = info in
+        let k_sub =
+          match options.subsampling with
+          | Sub_444 -> Color.no_subsample k_plane width height
+          | Sub_422 -> Color.subsample_422 k_plane width height
+          | Sub_420 -> Color.subsample_420 k_plane width height
+        in
+        ( 4,
+          [| yy_plane; cb_sub; cr_sub; k_sub |],
+          (y_hs, y_vs, cb_hs, cb_vs, cw, ch, [||], [||]) )
   in
 
-  let y_plane, cb_plane, cr_plane =
-    Color.rgb_buffer_to_ycbcr pixels_array width height
-  in
-
-  (* Determine subsampling parameters *)
+  (* Extract sampling info *)
   let ( y_h_sampling,
         y_v_sampling,
         cb_h_sampling,
         cb_v_sampling,
         chroma_width,
         chroma_height,
-        cb_sub,
-        cr_sub ) =
-    match options.color_mode with
-    | Grayscale ->
-        (* Grayscale: only Y component *)
-        (1, 1, 1, 1, width, height, [||], [||])
-    | Color -> (
-        match options.subsampling with
-        | Sub_444 ->
-            (* 4:4:4: No subsampling *)
-            ( 1,
-              1,
-              1,
-              1,
-              width,
-              height,
-              Color.no_subsample cb_plane width height,
-              Color.no_subsample cr_plane width height )
-        | Sub_422 ->
-            (* 4:2:2: Horizontal subsampling only *)
-            let cw = (width + 1) / 2 in
-            ( 2,
-              1,
-              1,
-              1,
-              cw,
-              height,
-              Color.subsample_422 cb_plane width height,
-              Color.subsample_422 cr_plane width height )
-        | Sub_420 ->
-            (* 4:2:0: Both horizontal and vertical subsampling *)
-            let cw = (width + 1) / 2 in
-            let ch = (height + 1) / 2 in
-            ( 2,
-              2,
-              1,
-              1,
-              cw,
-              ch,
-              Color.subsample_420 cb_plane width height,
-              Color.subsample_420 cr_plane width height ))
+        _,
+        _ ) =
+    sampling_info
   in
 
   (* Get quantization tables *)
@@ -1078,9 +1264,9 @@ let write_bytes_with_options options image =
   let mcu_h = (width + mcu_width - 1) / mcu_width in
   let mcu_v = (height + mcu_height - 1) / mcu_height in
 
-  (* For grayscale, we only have one component *)
+  (* Determine if grayscale or 4-component *)
   let is_grayscale = options.color_mode = Grayscale in
-  let num_components = if is_grayscale then 1 else 3 in
+  let is_4_component = options.color_mode = CMYK || options.color_mode = YCCK in
 
   (* Build frame header components *)
   let frame_components =
@@ -1091,6 +1277,33 @@ let write_bytes_with_options options image =
           h_sampling = 1;
           v_sampling = 1;
           quant_table_id = 0;
+        };
+      |]
+    else if is_4_component then
+      [|
+        {
+          Markers.component_id = 1;
+          h_sampling = y_h_sampling;
+          v_sampling = y_v_sampling;
+          quant_table_id = 0;
+        };
+        {
+          Markers.component_id = 2;
+          h_sampling = cb_h_sampling;
+          v_sampling = cb_v_sampling;
+          quant_table_id = 1;
+        };
+        {
+          Markers.component_id = 3;
+          h_sampling = cb_h_sampling;
+          v_sampling = cb_v_sampling;
+          quant_table_id = 1;
+        };
+        {
+          Markers.component_id = 4;
+          h_sampling = cb_h_sampling;
+          v_sampling = cb_v_sampling;
+          quant_table_id = 1;
         };
       |]
     else
@@ -1124,10 +1337,14 @@ let write_bytes_with_options options image =
 
   let h_blocks =
     if is_grayscale then [| y_h_blocks |]
+    else if is_4_component then
+      [| y_h_blocks; cb_h_blocks; cb_h_blocks; cb_h_blocks |]
     else [| y_h_blocks; cb_h_blocks; cb_h_blocks |]
   in
   let v_blocks =
     if is_grayscale then [| y_v_blocks |]
+    else if is_4_component then
+      [| y_v_blocks; cb_v_blocks; cb_v_blocks; cb_v_blocks |]
     else [| y_v_blocks; cb_v_blocks; cb_v_blocks |]
   in
   let num_blocks = Array.map2 ( * ) h_blocks v_blocks in
@@ -1136,10 +1353,9 @@ let write_bytes_with_options options image =
   let coefficients =
     Array.init num_components (fun ci ->
         let quant_table = if ci = 0 then lum_quant else chr_quant in
-        let plane, pw, ph =
-          if ci = 0 then (y_plane, width, height)
-          else if ci = 1 then (cb_sub, chroma_width, chroma_height)
-          else (cr_sub, chroma_width, chroma_height)
+        let plane = component_planes.(ci) in
+        let pw, ph =
+          if ci = 0 then (width, height) else (chroma_width, chroma_height)
         in
         Array.init num_blocks.(ci) (fun block_idx ->
             let bx = block_idx mod h_blocks.(ci) in
@@ -1207,6 +1423,13 @@ let write_bytes_with_options options image =
       let scan_components =
         if is_grayscale then
           [| { Markers.selector = 1; dc_table = 0; ac_table = 0 } |]
+        else if is_4_component then
+          [|
+            { Markers.selector = 1; dc_table = 0; ac_table = 0 };
+            { Markers.selector = 2; dc_table = 1; ac_table = 1 };
+            { Markers.selector = 3; dc_table = 1; ac_table = 1 };
+            { Markers.selector = 4; dc_table = 1; ac_table = 1 };
+          |]
         else
           [|
             { Markers.selector = 1; dc_table = 0; ac_table = 0 };
@@ -1662,23 +1885,64 @@ let write ?(quality = 75) filename image =
   close_out oc
 
 (** Create an image from raw RGB data *)
-let create_image width height pixels = { width; height; pixels; exif = None }
+let create_image width height pixels =
+  { width; height; pixels; pixel_format = RGB24; exif = None }
 
 (** Create an image with EXIF *)
 let create_image_with_exif width height pixels exif =
-  { width; height; pixels; exif = Some exif }
+  { width; height; pixels; pixel_format = RGB24; exif = Some exif }
 
-(** Get pixel at (x, y) as (r, g, b) *)
+(** Create a CMYK image *)
+let create_cmyk_image width height pixels =
+  { width; height; pixels; pixel_format = CMYK32; exif = None }
+
+(** Get pixel at (x, y) as (r, g, b) for RGB24 images *)
 let get_pixel image x y =
-  let idx = ((y * image.width) + x) * 3 in
-  let r = Bigarray.Array1.get image.pixels idx in
-  let g = Bigarray.Array1.get image.pixels (idx + 1) in
-  let b = Bigarray.Array1.get image.pixels (idx + 2) in
-  (r, g, b)
+  match image.pixel_format with
+  | RGB24 ->
+      let idx = ((y * image.width) + x) * 3 in
+      let r = Bigarray.Array1.get image.pixels idx in
+      let g = Bigarray.Array1.get image.pixels (idx + 1) in
+      let b = Bigarray.Array1.get image.pixels (idx + 2) in
+      (r, g, b)
+  | CMYK32 ->
+      (* Convert CMYK to RGB on the fly *)
+      let idx = ((y * image.width) + x) * 4 in
+      let c = Bigarray.Array1.get image.pixels idx in
+      let m = Bigarray.Array1.get image.pixels (idx + 1) in
+      let y_val = Bigarray.Array1.get image.pixels (idx + 2) in
+      let k = Bigarray.Array1.get image.pixels (idx + 3) in
+      Color.cmyk_to_rgb c m y_val k
+
+(** Get CMYK pixel at (x, y) as (c, m, y, k) *)
+let get_cmyk_pixel image x y =
+  match image.pixel_format with
+  | CMYK32 ->
+      let idx = ((y * image.width) + x) * 4 in
+      let c = Bigarray.Array1.get image.pixels idx in
+      let m = Bigarray.Array1.get image.pixels (idx + 1) in
+      let y_val = Bigarray.Array1.get image.pixels (idx + 2) in
+      let k = Bigarray.Array1.get image.pixels (idx + 3) in
+      (c, m, y_val, k)
+  | RGB24 -> failwith "get_cmyk_pixel: image is RGB24, not CMYK32"
 
 (** Set pixel at (x, y) *)
 let set_pixel image x y r g b =
-  let idx = ((y * image.width) + x) * 3 in
-  Bigarray.Array1.set image.pixels idx r;
-  Bigarray.Array1.set image.pixels (idx + 1) g;
-  Bigarray.Array1.set image.pixels (idx + 2) b
+  match image.pixel_format with
+  | RGB24 ->
+      let idx = ((y * image.width) + x) * 3 in
+      Bigarray.Array1.set image.pixels idx r;
+      Bigarray.Array1.set image.pixels (idx + 1) g;
+      Bigarray.Array1.set image.pixels (idx + 2) b
+  | CMYK32 -> failwith "set_pixel: image is CMYK32, use set_cmyk_pixel"
+
+(** Set CMYK pixel at (x, y) *)
+let set_cmyk_pixel image x y c m y_val k =
+  match image.pixel_format with
+  | CMYK32 ->
+      let idx = ((y * image.width) + x) * 4 in
+      Bigarray.Array1.set image.pixels idx c;
+      Bigarray.Array1.set image.pixels (idx + 1) m;
+      Bigarray.Array1.set image.pixels (idx + 2) y_val;
+      Bigarray.Array1.set image.pixels (idx + 3) k
+  | RGB24 -> failwith "set_cmyk_pixel: image is RGB24, not CMYK32"
