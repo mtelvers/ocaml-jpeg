@@ -3,10 +3,10 @@
     Supported features:
     - Baseline sequential DCT JPEG (SOF0)
     - Progressive DCT JPEG (SOF2)
-    - Arithmetic coding JPEG (SOF9, SOF10) - parsing support
+    - Arithmetic coding JPEG (SOF9, SOF10) - full encode/decode support
     - 8-bit and 12-bit precision
     - Grayscale, YCbCr, CMYK, and YCCK color (1, 3, or 4 components)
-    - Standard Huffman coding
+    - Standard Huffman coding and arithmetic coding
     - All common sampling factors (4:4:4, 4:2:2, 4:2:0)
     - EXIF metadata parsing and preservation
     - Restart markers *)

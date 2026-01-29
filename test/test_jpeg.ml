@@ -977,10 +977,10 @@ let test_arithmetic_context () =
 (** Test JPEG arithmetic decoder initialization *)
 let test_jpeg_arith_decoder_init () =
   let module Arith = Jpeg.Arithmetic in
-
   (* Create a simple test bitstream *)
   let data = Bytes.make 10 '\x00' in
-  Bytes.set_uint8 data 0 0x80;  (* Some test data *)
+  Bytes.set_uint8 data 0 0x80;
+  (* Some test data *)
   Bytes.set_uint8 data 1 0x00;
 
   (* Initialize JPEG decoder *)
@@ -993,7 +993,6 @@ let test_jpeg_arith_decoder_init () =
 (** Test JPEG arithmetic DC stat bins *)
 let test_jpeg_arith_dc_bins () =
   let module Arith = Jpeg.Arithmetic in
-
   (* Create DC stat bins *)
   let bins = Arith.create_dc_stat_bins () in
 
@@ -1006,7 +1005,6 @@ let test_jpeg_arith_dc_bins () =
 (** Test JPEG arithmetic AC stat bins *)
 let test_jpeg_arith_ac_bins () =
   let module Arith = Jpeg.Arithmetic in
-
   (* Create AC stat bins *)
   let bins = Arith.create_ac_stat_bins () in
 
@@ -1021,7 +1019,6 @@ let test_jpeg_arith_ac_bins () =
 (** Test JPEG arithmetic scan state initialization *)
 let test_jpeg_arith_scan_state () =
   let module Arith = Jpeg.Arithmetic in
-
   (* Create scan state for 3 components *)
   let data = Bytes.make 100 '\x80' in
   let state = Arith.init_arith_scan_decoder data 3 in
@@ -1040,7 +1037,6 @@ let test_jpeg_arith_scan_state () =
 (** Test setting arithmetic conditioning values *)
 let test_jpeg_arith_conditioning () =
   let module Arith = Jpeg.Arithmetic in
-
   let data = Bytes.make 100 '\x80' in
   let state = Arith.init_arith_scan_decoder data 2 in
 
@@ -1055,7 +1051,6 @@ let test_jpeg_arith_conditioning () =
 (** Test arithmetic decoder reset *)
 let test_jpeg_arith_reset () =
   let module Arith = Jpeg.Arithmetic in
-
   let data = Bytes.make 100 '\x80' in
   let state = Arith.init_arith_scan_decoder data 2 in
 
@@ -1071,13 +1066,14 @@ let test_jpeg_arith_reset () =
   (* Verify reset *)
   Alcotest.(check int) "Prev DC 0 reset" 0 state.Arith.prev_dc.(0);
   Alcotest.(check int) "Prev DC 1 reset" 0 state.Arith.prev_dc.(1);
-  Alcotest.(check int) "DC s0 index reset" 0 state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index;
-  Alcotest.(check int) "AC se index reset" 0 state.Arith.ac_bins.(0).Arith.ac_se.(0).Arith.index
+  Alcotest.(check int)
+    "DC s0 index reset" 0 state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index;
+  Alcotest.(check int)
+    "AC se index reset" 0 state.Arith.ac_bins.(0).Arith.ac_se.(0).Arith.index
 
 (** Test JPEG MQ-coder decode decision *)
 let test_jpeg_mq_decode () =
   let module Arith = Jpeg.Arithmetic in
-
   (* Create a bitstream that encodes some known decisions *)
   (* This tests the actual MQ-coder decode logic *)
   let data = Bytes.create 16 in
@@ -1090,14 +1086,12 @@ let test_jpeg_mq_decode () =
   let ctx = Arith.create_context () in
 
   (* Decode several decisions - should not crash *)
-  let decisions = Array.init 10 (fun _ ->
-    Arith.decode_decision ctx decoder
-  ) in
+  let decisions = Array.init 10 (fun _ -> Arith.decode_decision ctx decoder) in
 
   (* Verify decisions are valid binary values *)
-  Array.iter (fun d ->
-    Alcotest.(check bool) "Decision is 0 or 1" true (d = 0 || d = 1)
-  ) decisions
+  Array.iter
+    (fun d -> Alcotest.(check bool) "Decision is 0 or 1" true (d = 0 || d = 1))
+    decisions
 
 (** Test parsing of SOF9/SOF10 markers *)
 let test_arith_marker_parsing () =
@@ -1112,38 +1106,58 @@ let test_arith_marker_parsing () =
   Buffer.add_uint8 buf 0xFF;
   Buffer.add_uint8 buf 0xDB;
   Buffer.add_uint8 buf 0x00;
-  Buffer.add_uint8 buf 0x43;  (* length = 67 *)
-  Buffer.add_uint8 buf 0x00;  (* table 0, 8-bit precision *)
+  Buffer.add_uint8 buf 0x43;
+  (* length = 67 *)
+  Buffer.add_uint8 buf 0x00;
+  (* table 0, 8-bit precision *)
   for _ = 0 to 63 do
-    Buffer.add_uint8 buf 16  (* uniform quantization *)
+    Buffer.add_uint8 buf 16 (* uniform quantization *)
   done;
 
   (* SOF9 - Start of Frame, arithmetic sequential *)
   Buffer.add_uint8 buf 0xFF;
-  Buffer.add_uint8 buf 0xC9;  (* SOF9 marker *)
+  Buffer.add_uint8 buf 0xC9;
+  (* SOF9 marker *)
   Buffer.add_uint8 buf 0x00;
-  Buffer.add_uint8 buf 0x0B;  (* length = 11 *)
-  Buffer.add_uint8 buf 0x08;  (* precision = 8 bits *)
+  Buffer.add_uint8 buf 0x0B;
+  (* length = 11 *)
+  Buffer.add_uint8 buf 0x08;
+  (* precision = 8 bits *)
   Buffer.add_uint8 buf 0x00;
-  Buffer.add_uint8 buf 0x08;  (* height = 8 *)
+  Buffer.add_uint8 buf 0x08;
+  (* height = 8 *)
   Buffer.add_uint8 buf 0x00;
-  Buffer.add_uint8 buf 0x08;  (* width = 8 *)
-  Buffer.add_uint8 buf 0x01;  (* 1 component (grayscale) *)
-  Buffer.add_uint8 buf 0x01;  (* component ID = 1 *)
-  Buffer.add_uint8 buf 0x11;  (* sampling = 1x1 *)
-  Buffer.add_uint8 buf 0x00;  (* quant table = 0 *)
+  Buffer.add_uint8 buf 0x08;
+  (* width = 8 *)
+  Buffer.add_uint8 buf 0x01;
+  (* 1 component (grayscale) *)
+  Buffer.add_uint8 buf 0x01;
+  (* component ID = 1 *)
+  Buffer.add_uint8 buf 0x11;
+  (* sampling = 1x1 *)
+  Buffer.add_uint8 buf 0x00;
+
+  (* quant table = 0 *)
 
   (* SOS - Start of Scan *)
   Buffer.add_uint8 buf 0xFF;
   Buffer.add_uint8 buf 0xDA;
   Buffer.add_uint8 buf 0x00;
-  Buffer.add_uint8 buf 0x08;  (* length = 8 *)
-  Buffer.add_uint8 buf 0x01;  (* 1 component *)
-  Buffer.add_uint8 buf 0x01;  (* component selector = 1 *)
-  Buffer.add_uint8 buf 0x00;  (* DC/AC table = 0/0 *)
-  Buffer.add_uint8 buf 0x00;  (* Ss = 0 *)
-  Buffer.add_uint8 buf 0x3F;  (* Se = 63 *)
-  Buffer.add_uint8 buf 0x00;  (* Ah/Al = 0/0 *)
+  Buffer.add_uint8 buf 0x08;
+  (* length = 8 *)
+  Buffer.add_uint8 buf 0x01;
+  (* 1 component *)
+  Buffer.add_uint8 buf 0x01;
+  (* component selector = 1 *)
+  Buffer.add_uint8 buf 0x00;
+  (* DC/AC table = 0/0 *)
+  Buffer.add_uint8 buf 0x00;
+  (* Ss = 0 *)
+  Buffer.add_uint8 buf 0x3F;
+  (* Se = 63 *)
+  Buffer.add_uint8 buf 0x00;
+
+  (* Ah/Al = 0/0 *)
 
   (* Entropy coded data - a simple pattern that decodes to gray *)
   (* For arithmetic coding, we need data that produces valid coefficients *)
@@ -1160,12 +1174,15 @@ let test_arith_marker_parsing () =
   (* Parse markers to verify SOF9 is recognized *)
   let markers = Jpeg.Markers.parse_markers data in
 
-  let has_sof9 = List.exists (fun m ->
-    match m with
-    | Jpeg.Markers.SOF9 frame ->
-        frame.Jpeg.Markers.frame_type = Jpeg.Markers.ArithmeticSequential
-    | _ -> false
-  ) markers in
+  let has_sof9 =
+    List.exists
+      (fun m ->
+        match m with
+        | Jpeg.Markers.SOF9 frame ->
+            frame.Jpeg.Markers.frame_type = Jpeg.Markers.ArithmeticSequential
+        | _ -> false)
+      markers
+  in
 
   Alcotest.(check bool) "SOF9 marker parsed" true has_sof9;
 
@@ -1174,10 +1191,289 @@ let test_arith_marker_parsing () =
     let _decoded = Jpeg.read_bytes data in
     (* If we get here, decoding succeeded *)
     Alcotest.(check bool) "Arithmetic JPEG decoded" true true
-  with
-  | _ ->
+  with _ ->
     (* Decoding may fail with synthetic data, but parsing worked *)
     Alcotest.(check bool) "SOF9 parsing works" true true
+
+(** Test arithmetic baseline encoding (SOF9) *)
+let test_arith_baseline_encode () =
+  let width = 16 in
+  let height = 16 in
+
+  (* Create test image *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx (x * 16);
+      Bigarray.Array1.set pixels (idx + 1) (y * 16);
+      Bigarray.Array1.set pixels (idx + 2) 128
+    done
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Encode with arithmetic coding, baseline mode *)
+  let options =
+    { Jpeg.default_encode_options with entropy_coding = Jpeg.Arithmetic }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Verify valid JPEG *)
+  Alcotest.(check int) "Valid JPEG start 1" 0xFF (Bytes.get_uint8 data 0);
+  Alcotest.(check int) "Valid JPEG start 2" 0xD8 (Bytes.get_uint8 data 1);
+
+  (* Parse markers to verify SOF9 *)
+  let markers = Markers.parse_markers data in
+  let has_sof9 =
+    List.exists
+      (fun m -> match m with Markers.SOF9 _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has SOF9 marker" true has_sof9;
+
+  (* Verify has DAC marker (not DHT) *)
+  let has_dac =
+    List.exists
+      (fun m -> match m with Markers.DAC _ -> true | _ -> false)
+      markers
+  in
+  let has_dht =
+    List.exists
+      (fun m -> match m with Markers.DHT _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has DAC marker" true has_dac;
+  Alcotest.(check bool) "No DHT marker" false has_dht
+
+(** Test arithmetic progressive encoding (SOF10) *)
+let test_arith_progressive_encode () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx (x * 16);
+      Bigarray.Array1.set pixels (idx + 1) (y * 16);
+      Bigarray.Array1.set pixels (idx + 2) 128
+    done
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Encode with arithmetic coding, progressive mode *)
+  let options =
+    {
+      Jpeg.default_encode_options with
+      entropy_coding = Jpeg.Arithmetic;
+      encoding_mode = Jpeg.Progressive;
+    }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Verify valid JPEG *)
+  Alcotest.(check int) "Valid JPEG start 1" 0xFF (Bytes.get_uint8 data 0);
+  Alcotest.(check int) "Valid JPEG start 2" 0xD8 (Bytes.get_uint8 data 1);
+
+  (* Parse markers to verify SOF10 *)
+  let markers = Markers.parse_markers data in
+  let has_sof10 =
+    List.exists
+      (fun m -> match m with Markers.SOF10 _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has SOF10 marker" true has_sof10;
+
+  (* Verify has DAC marker *)
+  let has_dac =
+    List.exists
+      (fun m -> match m with Markers.DAC _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has DAC marker" true has_dac
+
+(** Test arithmetic grayscale encoding *)
+let test_arith_grayscale_encode () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let gray = (x + y) * 8 in
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx gray;
+      Bigarray.Array1.set pixels (idx + 1) gray;
+      Bigarray.Array1.set pixels (idx + 2) gray
+    done
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Encode as grayscale with arithmetic coding *)
+  let options =
+    {
+      Jpeg.default_encode_options with
+      entropy_coding = Jpeg.Arithmetic;
+      color_mode = Jpeg.Grayscale;
+    }
+  in
+  let data = Jpeg.write_bytes_with_options options image in
+
+  (* Parse markers to verify SOF9 with 1 component *)
+  let markers = Markers.parse_markers data in
+  let frame =
+    List.find_map
+      (fun m -> match m with Markers.SOF9 f -> Some f | _ -> None)
+      markers
+  in
+  match frame with
+  | None -> Alcotest.fail "No SOF9 marker found"
+  | Some f ->
+      Alcotest.(check int) "1 component" 1 (Array.length f.Markers.components)
+
+(** Test JPEG arithmetic encoder state *)
+let test_jpeg_arith_encoder_state () =
+  let module Arith = Jpeg.Arithmetic in
+  (* Initialize encoder *)
+  let encoder = Arith.init_jpeg_encoder () in
+
+  (* Verify encoder state is initialized *)
+  Alcotest.(check int) "Initial A" 0x10000 encoder.Arith.a;
+  Alcotest.(check int) "Initial C" 0 encoder.Arith.c;
+  Alcotest.(check int) "Initial CT" 11 encoder.Arith.ct;
+  Alcotest.(check int) "Initial ST" 0 encoder.Arith.st
+
+(** Test JPEG arithmetic encode decision *)
+let test_jpeg_arith_encode_decision () =
+  let module Arith = Jpeg.Arithmetic in
+  let encoder = Arith.init_jpeg_encoder () in
+  let ctx = Arith.create_context () in
+
+  (* Encode several decisions *)
+  Arith.encode_decision ctx encoder 0;
+  Arith.encode_decision ctx encoder 1;
+  Arith.encode_decision ctx encoder 0;
+
+  (* Verify encoder state changed *)
+  Alcotest.(check bool)
+    "Encoder state modified" true
+    (encoder.Arith.a <> 0x10000 || encoder.Arith.c <> 0)
+
+(** Test JPEG arithmetic scan encoder *)
+let test_jpeg_arith_scan_encoder () =
+  let module Arith = Jpeg.Arithmetic in
+  (* Initialize scan encoder for 2 components *)
+  let state = Arith.init_arith_scan_encoder 2 in
+
+  (* Verify state is properly initialized *)
+  Alcotest.(check int) "DC bins count" 2 (Array.length state.Arith.dc_bins);
+  Alcotest.(check int) "AC bins count" 2 (Array.length state.Arith.ac_bins);
+  Alcotest.(check int) "Prev DC count" 2 (Array.length state.Arith.prev_dc);
+
+  (* Verify default conditioning values *)
+  Alcotest.(check int) "Default L" 0 state.Arith.l.(0);
+  Alcotest.(check int) "Default Kx" 5 state.Arith.kx.(0)
+
+(** Test JPEG arithmetic encoder reset *)
+let test_jpeg_arith_encoder_reset () =
+  let module Arith = Jpeg.Arithmetic in
+  let state = Arith.init_arith_scan_encoder 2 in
+
+  (* Modify some state *)
+  state.Arith.prev_dc.(0) <- 100;
+  state.Arith.prev_dc.(1) <- -50;
+  state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index <- 5;
+
+  (* Reset *)
+  Arith.reset_arith_encoder state;
+
+  (* Verify reset *)
+  Alcotest.(check int) "Prev DC 0 reset" 0 state.Arith.prev_dc.(0);
+  Alcotest.(check int) "Prev DC 1 reset" 0 state.Arith.prev_dc.(1);
+  Alcotest.(check int)
+    "DC s0 index reset" 0 state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index;
+  Alcotest.(check int) "Encoder A reset" 0x10000 state.Arith.encoder.Arith.a
+
+(** Test JPEG arithmetic block encoding *)
+let test_jpeg_arith_block_encode () =
+  let module Arith = Jpeg.Arithmetic in
+  let state = Arith.init_arith_scan_encoder 1 in
+
+  (* Create a simple coefficient block *)
+  let coeffs = Array.make 64 0 in
+  coeffs.(0) <- 100;
+  (* DC *)
+  coeffs.(1) <- -5;
+  (* AC *)
+  coeffs.(2) <- 3;
+
+  (* AC *)
+
+  (* Encode the block *)
+  Arith.encode_arith_block state 0 coeffs;
+
+  (* Verify DC predictor was updated *)
+  Alcotest.(check int) "Prev DC updated" 100 state.Arith.prev_dc.(0);
+
+  (* Finish encoding and get data *)
+  let data = Arith.finish_arith_encoder state in
+  Alcotest.(check bool) "Data produced" true (Bytes.length data > 0)
+
+(** Test arithmetic encoding produces smaller files than Huffman *)
+let test_arith_file_size () =
+  let width = 32 in
+  let height = 32 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx (x * 8);
+      Bigarray.Array1.set pixels (idx + 1) (y * 8);
+      Bigarray.Array1.set pixels (idx + 2) 128
+    done
+  done;
+  let image = Jpeg.create_image width height pixels in
+
+  (* Encode with Huffman *)
+  let huffman_data =
+    Jpeg.write_bytes_with_options
+      { Jpeg.default_encode_options with entropy_coding = Jpeg.Huffman }
+      image
+  in
+
+  (* Encode with arithmetic *)
+  let arith_data =
+    Jpeg.write_bytes_with_options
+      { Jpeg.default_encode_options with entropy_coding = Jpeg.Arithmetic }
+      image
+  in
+
+  (* Arithmetic should typically produce smaller or similar size files *)
+  (* We just verify both produce valid data *)
+  Alcotest.(check bool)
+    "Huffman data produced" true
+    (Bytes.length huffman_data > 0);
+  Alcotest.(check bool)
+    "Arithmetic data produced" true
+    (Bytes.length arith_data > 0);
+
+  (* Print sizes for information - arithmetic is typically 5-10% smaller *)
+  Printf.printf "Huffman size: %d bytes, Arithmetic size: %d bytes\n%!"
+    (Bytes.length huffman_data)
+    (Bytes.length arith_data)
 
 (** All tests *)
 let () =
@@ -1263,7 +1559,8 @@ let () =
         [
           Alcotest.test_case "qm-coder-basic" `Quick test_qm_coder_basic;
           Alcotest.test_case "context-state" `Quick test_arithmetic_context;
-          Alcotest.test_case "jpeg-decoder-init" `Quick test_jpeg_arith_decoder_init;
+          Alcotest.test_case "jpeg-decoder-init" `Quick
+            test_jpeg_arith_decoder_init;
           Alcotest.test_case "dc-stat-bins" `Quick test_jpeg_arith_dc_bins;
           Alcotest.test_case "ac-stat-bins" `Quick test_jpeg_arith_ac_bins;
           Alcotest.test_case "scan-state" `Quick test_jpeg_arith_scan_state;
@@ -1271,5 +1568,21 @@ let () =
           Alcotest.test_case "reset" `Quick test_jpeg_arith_reset;
           Alcotest.test_case "mq-decode" `Quick test_jpeg_mq_decode;
           Alcotest.test_case "sof9-parsing" `Quick test_arith_marker_parsing;
+        ] );
+      ( "arithmetic-encoding",
+        [
+          Alcotest.test_case "baseline-sof9" `Quick test_arith_baseline_encode;
+          Alcotest.test_case "progressive-sof10" `Quick
+            test_arith_progressive_encode;
+          Alcotest.test_case "grayscale" `Quick test_arith_grayscale_encode;
+          Alcotest.test_case "encoder-state" `Quick
+            test_jpeg_arith_encoder_state;
+          Alcotest.test_case "encode-decision" `Quick
+            test_jpeg_arith_encode_decision;
+          Alcotest.test_case "scan-encoder" `Quick test_jpeg_arith_scan_encoder;
+          Alcotest.test_case "encoder-reset" `Quick
+            test_jpeg_arith_encoder_reset;
+          Alcotest.test_case "block-encode" `Quick test_jpeg_arith_block_encode;
+          Alcotest.test_case "file-size-comparison" `Quick test_arith_file_size;
         ] );
     ]

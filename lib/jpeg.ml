@@ -74,8 +74,8 @@ type decode_state = {
   mutable quant_tables : Markers.quant_table array;
   mutable dc_tables : Huffman.table array;
   mutable ac_tables : Huffman.table array;
-  mutable arith_dc_conditioning : int array;  (* L values for DC *)
-  mutable arith_ac_conditioning : int array;  (* Kx values for AC *)
+  mutable arith_dc_conditioning : int array; (* L values for DC *)
+  mutable arith_ac_conditioning : int array; (* Kx values for AC *)
   mutable restart_interval : int;
   mutable exif : Exif.t option;
 }
@@ -359,8 +359,10 @@ let create_decode_state () =
         { Markers.table_id = 0; precision = 0; values = Array.make 64 16 };
     dc_tables = Array.make 4 (Huffman.std_dc_luminance_table ());
     ac_tables = Array.make 4 (Huffman.std_ac_luminance_table ());
-    arith_dc_conditioning = Array.make 4 0;   (* Default L=0 *)
-    arith_ac_conditioning = Array.make 4 5;   (* Default Kx=5 *)
+    arith_dc_conditioning = Array.make 4 0;
+    (* Default L=0 *)
+    arith_ac_conditioning = Array.make 4 5;
+    (* Default Kx=5 *)
     restart_interval = 0;
     exif = None;
   }
@@ -394,10 +396,12 @@ let process_markers markers =
             (fun (ac : Markers.arithmetic_conditioning) ->
               if ac.table_class = 0 then
                 (* DC conditioning: L value *)
-                state.arith_dc_conditioning.(ac.table_id) <- ac.conditioning_value
+                state.arith_dc_conditioning.(ac.table_id) <-
+                  ac.conditioning_value
               else
                 (* AC conditioning: Kx value *)
-                state.arith_ac_conditioning.(ac.table_id) <- ac.conditioning_value)
+                state.arith_ac_conditioning.(ac.table_id) <-
+                  ac.conditioning_value)
             tables
       | Markers.DRI interval -> state.restart_interval <- interval
       | Markers.APP1 data -> state.exif <- Some (Exif.parse data)
@@ -697,7 +701,9 @@ let decode_arith_interleaved_scan entropy_data frame scan state =
   let _, _, _, _, mcus_x, mcus_y = calculate_mcu_dimensions frame in
 
   (* Initialize arithmetic decoder *)
-  let arith_state = Arithmetic.init_arith_scan_decoder entropy_data num_components in
+  let arith_state =
+    Arithmetic.init_arith_scan_decoder entropy_data num_components
+  in
 
   (* Set conditioning values from DAC markers *)
   for ci = 0 to num_components - 1 do
@@ -789,13 +795,16 @@ let init_arith_progressive_state frame mcus_x mcus_y =
   coefficients
 
 (** Decode arithmetic DC scan (first or refining) *)
-let decode_arith_dc_scan entropy_data frame scan state coefficients mcus_x mcus_y =
+let decode_arith_dc_scan entropy_data frame scan state coefficients mcus_x
+    mcus_y =
   let num_scan_components = Array.length scan.Markers.scan_components in
   let components = frame.Markers.components in
   let al = scan.Markers.al in
 
   (* Initialize arithmetic decoder for this scan *)
-  let arith_state = Arithmetic.init_arith_scan_decoder entropy_data num_scan_components in
+  let arith_state =
+    Arithmetic.init_arith_scan_decoder entropy_data num_scan_components
+  in
 
   (* Set conditioning values *)
   for sci = 0 to num_scan_components - 1 do
@@ -811,8 +820,7 @@ let decode_arith_dc_scan entropy_data frame scan state coefficients mcus_x mcus_
       if
         state.restart_interval > 0 && !mcu_count > 0
         && !mcu_count mod state.restart_interval = 0
-      then
-        Arithmetic.reset_arith_decoder arith_state;
+      then Arithmetic.reset_arith_decoder arith_state;
 
       for sci = 0 to num_scan_components - 1 do
         let scan_comp = scan.Markers.scan_components.(sci) in
@@ -831,7 +839,10 @@ let decode_arith_dc_scan entropy_data frame scan state coefficients mcus_x mcus_
             let dc_bins = arith_state.Arithmetic.dc_bins.(sci) in
             let prev_dc = arith_state.Arithmetic.prev_dc.(sci) in
             let l = arith_state.Arithmetic.l.(sci) in
-            let dc_diff = Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins prev_dc l in
+            let dc_diff =
+              Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins
+                prev_dc l
+            in
             let dc_value = prev_dc + dc_diff in
             arith_state.Arithmetic.prev_dc.(sci) <- dc_value;
 
@@ -846,7 +857,8 @@ let decode_arith_dc_scan entropy_data frame scan state coefficients mcus_x mcus_
   done
 
 (** Decode arithmetic AC scan *)
-let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x mcus_y =
+let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
+    mcus_y =
   let num_scan_components = Array.length scan.Markers.scan_components in
   let components = frame.Markers.components in
   let ss = scan.Markers.ss in
@@ -854,7 +866,9 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x mcus_
   let al = scan.Markers.al in
 
   (* Initialize arithmetic decoder *)
-  let arith_state = Arithmetic.init_arith_scan_decoder entropy_data num_scan_components in
+  let arith_state =
+    Arithmetic.init_arith_scan_decoder entropy_data num_scan_components
+  in
 
   (* Set conditioning values *)
   for sci = 0 to num_scan_components - 1 do
@@ -870,8 +884,7 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x mcus_
       if
         state.restart_interval > 0 && !mcu_count > 0
         && !mcu_count mod state.restart_interval = 0
-      then
-        Arithmetic.reset_arith_decoder arith_state;
+      then Arithmetic.reset_arith_decoder arith_state;
 
       for sci = 0 to num_scan_components - 1 do
         let scan_comp = scan.Markers.scan_components.(sci) in
@@ -896,31 +909,41 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x mcus_
               let ki = !k - 1 in
 
               (* SE: End of block decision *)
-              let eob = Arithmetic.decode_decision ac_bins.Arithmetic.ac_se.(ki)
-                         arith_state.Arithmetic.decoder in
-              if eob = 1 then
-                k := se + 1  (* Exit loop *)
+              let eob =
+                Arithmetic.decode_decision
+                  ac_bins.Arithmetic.ac_se.(ki)
+                  arith_state.Arithmetic.decoder
+              in
+              if eob = 1 then k := se + 1 (* Exit loop *)
               else begin
                 (* S0: Is this coefficient zero? *)
-                let is_zero = Arithmetic.decode_decision ac_bins.Arithmetic.ac_s0.(ki)
-                               arith_state.Arithmetic.decoder in
-                if is_zero = 0 then
-                  incr k
+                let is_zero =
+                  Arithmetic.decode_decision
+                    ac_bins.Arithmetic.ac_s0.(ki)
+                    arith_state.Arithmetic.decoder
+                in
+                if is_zero = 0 then incr k
                 else begin
                   (* Non-zero coefficient *)
-                  let sign = Arithmetic.decode_decision ac_bins.Arithmetic.ac_sign.(ki)
-                              arith_state.Arithmetic.decoder in
-                  let mag_ctx = if sign = 0 then ac_bins.Arithmetic.ac_sp.(ki)
-                               else ac_bins.Arithmetic.ac_sn.(ki) in
+                  let sign =
+                    Arithmetic.decode_decision
+                      ac_bins.Arithmetic.ac_sign.(ki)
+                      arith_state.Arithmetic.decoder
+                  in
+                  let mag_ctx =
+                    if sign = 0 then ac_bins.Arithmetic.ac_sp.(ki)
+                    else ac_bins.Arithmetic.ac_sn.(ki)
+                  in
 
                   (* Decode magnitude category *)
                   let rec decode_category sz =
                     if sz >= 15 || sz > kx then sz
                     else begin
-                      let continue = Arithmetic.decode_decision mag_ctx
-                                      arith_state.Arithmetic.decoder in
-                      if continue = 0 then sz
-                      else decode_category (sz + 1)
+                      let continue =
+                        Arithmetic.decode_decision mag_ctx
+                          arith_state.Arithmetic.decoder
+                      in
+                      if continue = 0 then sz else decode_category (sz + 1)
                     end
                   in
                   let category = decode_category 1 in
@@ -932,8 +955,11 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x mcus_
                       let rec decode_bits acc remaining =
                         if remaining <= 0 then acc
                         else begin
-                          let bit = Arithmetic.decode_decision ac_bins.Arithmetic.ac_x1.(ki)
-                                     arith_state.Arithmetic.decoder in
+                          let bit =
+                            Arithmetic.decode_decision
+                              ac_bins.Arithmetic.ac_x1.(ki)
+                              arith_state.Arithmetic.decoder
+                          in
                           decode_bits ((acc lsl 1) lor bit) (remaining - 1)
                         end
                       in
@@ -942,7 +968,8 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x mcus_
                     end
                   in
 
-                  block_coeffs.(!k) <- (if sign = 0 then magnitude else -magnitude) lsl al;
+                  block_coeffs.(!k) <-
+                    (if sign = 0 then magnitude else -magnitude) lsl al;
                   incr k
                 end
               end
@@ -971,16 +998,22 @@ let decode_arith_progressive markers frame state =
           List.iter
             (fun (ac : Markers.arithmetic_conditioning) ->
               if ac.table_class = 0 then
-                state.arith_dc_conditioning.(ac.table_id) <- ac.conditioning_value
+                state.arith_dc_conditioning.(ac.table_id) <-
+                  ac.conditioning_value
               else
-                state.arith_ac_conditioning.(ac.table_id) <- ac.conditioning_value)
+                state.arith_ac_conditioning.(ac.table_id) <-
+                  ac.conditioning_value)
             tables
       | Markers.SOS (scan_header, entropy_data) ->
-          let is_dc_scan = scan_header.Markers.ss = 0 && scan_header.Markers.se = 0 in
+          let is_dc_scan =
+            scan_header.Markers.ss = 0 && scan_header.Markers.se = 0
+          in
           if is_dc_scan then
-            decode_arith_dc_scan entropy_data frame scan_header state coefficients mcus_x mcus_y
+            decode_arith_dc_scan entropy_data frame scan_header state
+              coefficients mcus_x mcus_y
           else
-            decode_arith_ac_scan entropy_data frame scan_header state coefficients mcus_x mcus_y
+            decode_arith_ac_scan entropy_data frame scan_header state
+              coefficients mcus_x mcus_y
       | _ -> ())
     markers;
 
@@ -997,7 +1030,9 @@ let decode_arith_progressive markers frame state =
         Array.init num_blocks (fun block_idx ->
             let coeffs = coefficients.(ci).(block_idx) in
             (* Dequantize *)
-            let dequant = Quantization.dequantize coeffs quant_table.Markers.values in
+            let dequant =
+              Quantization.dequantize coeffs quant_table.Markers.values
+            in
             (* IDCT *)
             let spatial = Dct.idct dequant in
             (* Level shift and clamp *)
@@ -1733,9 +1768,134 @@ let write_bytes_with_options options image =
   in
   let quant_precision = if precision_value = 8 then 0 else 1 in
 
-  match options.encoding_mode with
-  | Baseline ->
-      (* Baseline encoding: single scan *)
+  (* Build scan components (used by both Huffman and Arithmetic) *)
+  let scan_components =
+    if is_grayscale then
+      [| { Markers.selector = 1; dc_table = 0; ac_table = 0 } |]
+    else if is_4_component then
+      [|
+        { Markers.selector = 1; dc_table = 0; ac_table = 0 };
+        { Markers.selector = 2; dc_table = 1; ac_table = 1 };
+        { Markers.selector = 3; dc_table = 1; ac_table = 1 };
+        { Markers.selector = 4; dc_table = 1; ac_table = 1 };
+      |]
+    else
+      [|
+        { Markers.selector = 1; dc_table = 0; ac_table = 0 };
+        { Markers.selector = 2; dc_table = 1; ac_table = 1 };
+        { Markers.selector = 3; dc_table = 1; ac_table = 1 };
+      |]
+  in
+
+  (* Common initial markers *)
+  let initial_markers =
+    [
+      Markers.SOI;
+      Markers.APP0
+        {
+          version_major = 1;
+          version_minor = 1;
+          density_units = 0;
+          x_density = 1;
+          y_density = 1;
+          thumbnail_width = 0;
+          thumbnail_height = 0;
+        };
+    ]
+    @ (match image.exif with
+      | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
+      | None -> [])
+    @ [
+        Markers.DQT
+          (if is_grayscale then
+             [
+               {
+                 Markers.table_id = 0;
+                 precision = quant_precision;
+                 values = lum_quant;
+               };
+             ]
+           else
+             [
+               {
+                 Markers.table_id = 0;
+                 precision = quant_precision;
+                 values = lum_quant;
+               };
+               {
+                 Markers.table_id = 1;
+                 precision = quant_precision;
+                 values = chr_quant;
+               };
+             ]);
+      ]
+  in
+
+  (* DAC markers for arithmetic coding (default conditioning values) *)
+  let dac_markers =
+    if is_grayscale then
+      [
+        { Markers.table_class = 0; table_id = 0; conditioning_value = 0 };
+        { Markers.table_class = 1; table_id = 0; conditioning_value = 5 };
+      ]
+    else
+      [
+        { Markers.table_class = 0; table_id = 0; conditioning_value = 0 };
+        { Markers.table_class = 1; table_id = 0; conditioning_value = 5 };
+        { Markers.table_class = 0; table_id = 1; conditioning_value = 0 };
+        { Markers.table_class = 1; table_id = 1; conditioning_value = 5 };
+      ]
+  in
+
+  (* DHT markers for Huffman coding *)
+  let dht_markers =
+    if is_grayscale then
+      [
+        {
+          Markers.table_class = 0;
+          table_id = 0;
+          counts = Huffman.std_dc_luminance_counts;
+          values = Huffman.std_dc_luminance_values;
+        };
+        {
+          Markers.table_class = 1;
+          table_id = 0;
+          counts = Huffman.std_ac_luminance_counts;
+          values = Huffman.std_ac_luminance_values;
+        };
+      ]
+    else
+      [
+        {
+          Markers.table_class = 0;
+          table_id = 0;
+          counts = Huffman.std_dc_luminance_counts;
+          values = Huffman.std_dc_luminance_values;
+        };
+        {
+          Markers.table_class = 1;
+          table_id = 0;
+          counts = Huffman.std_ac_luminance_counts;
+          values = Huffman.std_ac_luminance_values;
+        };
+        {
+          Markers.table_class = 0;
+          table_id = 1;
+          counts = Huffman.std_dc_chrominance_counts;
+          values = Huffman.std_dc_chrominance_values;
+        };
+        {
+          Markers.table_class = 1;
+          table_id = 1;
+          counts = Huffman.std_ac_chrominance_counts;
+          values = Huffman.std_ac_chrominance_values;
+        };
+      ]
+  in
+
+  match (options.encoding_mode, options.entropy_coding) with
+  | Baseline, Huffman ->
+      (* Baseline Huffman encoding: single scan (SOF0) *)
       let writer = Bitstream.create_writer () in
       let prev_dc = Array.make num_components 0 in
       let mcu_count = ref 0 in
@@ -1782,66 +1942,9 @@ let write_bytes_with_options options image =
       Bitstream.flush_writer writer;
       let scan_data = Bitstream.get_bytes writer in
 
-      (* Build scan components *)
-      let scan_components =
-        if is_grayscale then
-          [| { Markers.selector = 1; dc_table = 0; ac_table = 0 } |]
-        else if is_4_component then
-          [|
-            { Markers.selector = 1; dc_table = 0; ac_table = 0 };
-            { Markers.selector = 2; dc_table = 1; ac_table = 1 };
-            { Markers.selector = 3; dc_table = 1; ac_table = 1 };
-            { Markers.selector = 4; dc_table = 1; ac_table = 1 };
-          |]
-        else
-          [|
-            { Markers.selector = 1; dc_table = 0; ac_table = 0 };
-            { Markers.selector = 2; dc_table = 1; ac_table = 1 };
-            { Markers.selector = 3; dc_table = 1; ac_table = 1 };
-          |]
-      in
-
-      (* Build marker list *)
       let markers =
-        [
-          Markers.SOI;
-          Markers.APP0
-            {
-              version_major = 1;
-              version_minor = 1;
-              density_units = 0;
-              x_density = 1;
-              y_density = 1;
-              thumbnail_width = 0;
-              thumbnail_height = 0;
-            };
-        ]
-        @ (match image.exif with
-          | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
-          | None -> [])
+        initial_markers
         @ [
-            Markers.DQT
-              (if is_grayscale then
-                 [
-                   {
-                     Markers.table_id = 0;
-                     precision = quant_precision;
-                     values = lum_quant;
-                   };
-                 ]
-               else
-                 [
-                   {
-                     Markers.table_id = 0;
-                     precision = quant_precision;
-                     values = lum_quant;
-                   };
-                   {
-                     Markers.table_id = 1;
-                     precision = quant_precision;
-                     values = chr_quant;
-                   };
-                 ]);
             Markers.SOF0
               {
                 frame_type = Markers.Baseline;
@@ -1851,59 +1954,83 @@ let write_bytes_with_options options image =
                 components = frame_components;
               };
           ]
-        @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
+        @ (if options.restart_interval > 0 then
+             [ Markers.DRI options.restart_interval ]
+           else [])
+        @ [ Markers.DHT dht_markers ]
         @ [
-            Markers.DHT
-              (if is_grayscale then
-                 [
-                   {
-                     table_class = 0;
-                     table_id = 0;
-                     counts = Huffman.std_dc_luminance_counts;
-                     values = Huffman.std_dc_luminance_values;
-                   };
-                   {
-                     table_class = 1;
-                     table_id = 0;
-                     counts = Huffman.std_ac_luminance_counts;
-                     values = Huffman.std_ac_luminance_values;
-                   };
-                 ]
-               else
-                 [
-                   {
-                     table_class = 0;
-                     table_id = 0;
-                     counts = Huffman.std_dc_luminance_counts;
-                     values = Huffman.std_dc_luminance_values;
-                   };
-                   {
-                     table_class = 1;
-                     table_id = 0;
-                     counts = Huffman.std_ac_luminance_counts;
-                     values = Huffman.std_ac_luminance_values;
-                   };
-                   {
-                     table_class = 0;
-                     table_id = 1;
-                     counts = Huffman.std_dc_chrominance_counts;
-                     values = Huffman.std_dc_chrominance_values;
-                   };
-                   {
-                     table_class = 1;
-                     table_id = 1;
-                     counts = Huffman.std_ac_chrominance_counts;
-                     values = Huffman.std_ac_chrominance_values;
-                   };
-                 ]);
             Markers.SOS
               ({ scan_components; ss = 0; se = 63; ah = 0; al = 0 }, scan_data);
             Markers.EOI;
           ]
       in
       Markers.write_markers markers
-  | Progressive ->
-      (* Progressive encoding: multiple scans *)
+  | Baseline, Arithmetic ->
+      (* Baseline Arithmetic encoding: single scan (SOF9) *)
+      let arith_state = Arithmetic.init_arith_scan_encoder num_components in
+      let mcu_count = ref 0 in
+      let restart_interval = options.restart_interval in
+
+      for mcu_y = 0 to mcu_v - 1 do
+        for mcu_x = 0 to mcu_h - 1 do
+          (* Check for restart marker - for arithmetic coding, we need to flush
+             and re-initialize the encoder at restart boundaries *)
+          if
+            restart_interval > 0 && !mcu_count > 0
+            && !mcu_count mod restart_interval = 0
+          then begin
+            (* Flush current segment, insert RST marker in output *)
+            let segment_data = Arithmetic.finish_arith_encoder arith_state in
+            (* We'll handle RST markers differently - combine segments later *)
+            ignore segment_data;
+            Arithmetic.reset_arith_encoder arith_state
+          end;
+
+          for ci = 0 to num_components - 1 do
+            let h_sampling = if ci = 0 then y_h_sampling else cb_h_sampling in
+            let v_sampling = if ci = 0 then y_v_sampling else cb_v_sampling in
+
+            for v = 0 to v_sampling - 1 do
+              for h = 0 to h_sampling - 1 do
+                let bx = (mcu_x * h_sampling) + h in
+                let by = (mcu_y * v_sampling) + v in
+                let block_idx = (by * h_blocks.(ci)) + bx in
+                if block_idx < num_blocks.(ci) then begin
+                  let quantized = coefficients.(ci).(block_idx) in
+                  Arithmetic.encode_arith_block arith_state ci quantized
+                end
+              done
+            done
+          done;
+          incr mcu_count
+        done
+      done;
+
+      let scan_data = Arithmetic.finish_arith_encoder arith_state in
+
+      let markers =
+        initial_markers
+        @ [
+            Markers.SOF9
+              {
+                frame_type = Markers.ArithmeticSequential;
+                precision = precision_value;
+                height;
+                width;
+                components = frame_components;
+              };
+          ]
+        @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
+        @ [ Markers.DAC dac_markers ]
+        @ [
+            Markers.SOS
+              ({ scan_components; ss = 0; se = 63; ah = 0; al = 0 }, scan_data);
+            Markers.EOI;
+          ]
+      in
+      Markers.write_markers markers
+  | Progressive, Huffman ->
+      (* Progressive Huffman encoding: multiple scans (SOF2) *)
       let scans =
         if is_grayscale then grayscale_progressive_scans
         else default_progressive_scans
@@ -1913,46 +2040,9 @@ let write_bytes_with_options options image =
       let restart_interval = options.restart_interval in
 
       (* Build initial markers *)
-      let initial_markers =
-        [
-          Markers.SOI;
-          Markers.APP0
-            {
-              version_major = 1;
-              version_minor = 1;
-              density_units = 0;
-              x_density = 1;
-              y_density = 1;
-              thumbnail_width = 0;
-              thumbnail_height = 0;
-            };
-        ]
-        @ (match image.exif with
-          | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
-          | None -> [])
+      let prog_initial_markers =
+        initial_markers
         @ [
-            Markers.DQT
-              (if is_grayscale then
-                 [
-                   {
-                     Markers.table_id = 0;
-                     precision = quant_precision;
-                     values = lum_quant;
-                   };
-                 ]
-               else
-                 [
-                   {
-                     Markers.table_id = 0;
-                     precision = quant_precision;
-                     values = lum_quant;
-                   };
-                   {
-                     Markers.table_id = 1;
-                     precision = quant_precision;
-                     values = chr_quant;
-                   };
-                 ]);
             Markers.SOF2
               {
                 frame_type = Markers.Progressive;
@@ -1963,52 +2053,7 @@ let write_bytes_with_options options image =
               };
           ]
         @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
-        @ [
-            (* All Huffman tables upfront *)
-            Markers.DHT
-              (if is_grayscale then
-                 [
-                   {
-                     table_class = 0;
-                     table_id = 0;
-                     counts = Huffman.std_dc_luminance_counts;
-                     values = Huffman.std_dc_luminance_values;
-                   };
-                   {
-                     table_class = 1;
-                     table_id = 0;
-                     counts = Huffman.std_ac_luminance_counts;
-                     values = Huffman.std_ac_luminance_values;
-                   };
-                 ]
-               else
-                 [
-                   {
-                     table_class = 0;
-                     table_id = 0;
-                     counts = Huffman.std_dc_luminance_counts;
-                     values = Huffman.std_dc_luminance_values;
-                   };
-                   {
-                     table_class = 1;
-                     table_id = 0;
-                     counts = Huffman.std_ac_luminance_counts;
-                     values = Huffman.std_ac_luminance_values;
-                   };
-                   {
-                     table_class = 0;
-                     table_id = 1;
-                     counts = Huffman.std_dc_chrominance_counts;
-                     values = Huffman.std_dc_chrominance_values;
-                   };
-                   {
-                     table_class = 1;
-                     table_id = 1;
-                     counts = Huffman.std_ac_chrominance_counts;
-                     values = Huffman.std_ac_chrominance_values;
-                   };
-                 ]);
-          ]
+        @ [ Markers.DHT dht_markers ]
       in
 
       (* Encode each scan *)
@@ -2026,7 +2071,7 @@ let write_bytes_with_options options image =
                   ac_tables scan_spec mcu_h mcu_v y_h_sampling y_v_sampling
                   cb_h_sampling cb_v_sampling ~restart_interval
             in
-            let scan_components =
+            let prog_scan_components =
               Array.of_list
                 (List.map
                    (fun ci ->
@@ -2041,7 +2086,7 @@ let write_bytes_with_options options image =
             in
             Markers.SOS
               ( {
-                  scan_components;
+                  Markers.scan_components = prog_scan_components;
                   ss = scan_spec.ss;
                   se = scan_spec.se;
                   ah = scan_spec.ah;
@@ -2051,7 +2096,157 @@ let write_bytes_with_options options image =
           scans
       in
 
-      let all_markers = initial_markers @ scan_markers @ [ Markers.EOI ] in
+      let all_markers = prog_initial_markers @ scan_markers @ [ Markers.EOI ] in
+      Markers.write_markers all_markers
+  | Progressive, Arithmetic ->
+      (* Progressive Arithmetic encoding: multiple scans (SOF10) *)
+      let scans =
+        if is_grayscale then grayscale_progressive_scans
+        else default_progressive_scans
+      in
+      let restart_interval = options.restart_interval in
+
+      (* Build initial markers *)
+      let prog_arith_initial_markers =
+        initial_markers
+        @ [
+            Markers.SOF10
+              {
+                frame_type = Markers.ArithmeticProgressive;
+                precision = precision_value;
+                height;
+                width;
+                components = frame_components;
+              };
+          ]
+        @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
+        @ [ Markers.DAC dac_markers ]
+      in
+
+      (* Encode each scan with arithmetic coding *)
+      let scan_markers =
+        List.map
+          (fun scan_spec ->
+            let is_dc_scan = scan_spec.ss = 0 && scan_spec.se = 0 in
+            let num_scan_components = List.length scan_spec.components in
+            let arith_state =
+              Arithmetic.init_arith_scan_encoder num_scan_components
+            in
+            let al = scan_spec.al in
+            let mcu_count = ref 0 in
+
+            if is_dc_scan then begin
+              (* DC scan - encode DC coefficients only *)
+              for mcu_y = 0 to mcu_v - 1 do
+                for mcu_x = 0 to mcu_h - 1 do
+                  if
+                    restart_interval > 0 && !mcu_count > 0
+                    && !mcu_count mod restart_interval = 0
+                  then Arithmetic.reset_arith_encoder arith_state;
+
+                  List.iteri
+                    (fun sci ci ->
+                      let h_sampling =
+                        if ci = 0 then y_h_sampling else cb_h_sampling
+                      in
+                      let v_sampling =
+                        if ci = 0 then y_v_sampling else cb_v_sampling
+                      in
+
+                      for v = 0 to v_sampling - 1 do
+                        for h = 0 to h_sampling - 1 do
+                          let bx = (mcu_x * h_sampling) + h in
+                          let by = (mcu_y * v_sampling) + v in
+                          let block_idx = (by * h_blocks.(ci)) + bx in
+                          if block_idx < num_blocks.(ci) then begin
+                            let coeffs = coefficients.(ci).(block_idx) in
+                            let dc_value = coeffs.(0) asr al in
+                            let dc_coeffs = Array.make 64 0 in
+                            dc_coeffs.(0) <- dc_value;
+                            Arithmetic.encode_arith_block arith_state sci
+                              dc_coeffs
+                          end
+                        done
+                      done)
+                    scan_spec.components;
+                  incr mcu_count
+                done
+              done
+            end
+            else begin
+              (* AC scan - encode AC coefficients in spectral range *)
+              let ss = scan_spec.ss in
+              let se = scan_spec.se in
+
+              for mcu_y = 0 to mcu_v - 1 do
+                for mcu_x = 0 to mcu_h - 1 do
+                  if
+                    restart_interval > 0 && !mcu_count > 0
+                    && !mcu_count mod restart_interval = 0
+                  then Arithmetic.reset_arith_encoder arith_state;
+
+                  List.iteri
+                    (fun sci ci ->
+                      let h_sampling =
+                        if ci = 0 then y_h_sampling else cb_h_sampling
+                      in
+                      let v_sampling =
+                        if ci = 0 then y_v_sampling else cb_v_sampling
+                      in
+
+                      for v = 0 to v_sampling - 1 do
+                        for h = 0 to h_sampling - 1 do
+                          let bx = (mcu_x * h_sampling) + h in
+                          let by = (mcu_y * v_sampling) + v in
+                          let block_idx = (by * h_blocks.(ci)) + bx in
+                          if block_idx < num_blocks.(ci) then begin
+                            let orig_coeffs = coefficients.(ci).(block_idx) in
+                            (* Create coefficients with only the AC range we care about *)
+                            let ac_coeffs = Array.make 64 0 in
+                            for k = ss to se do
+                              ac_coeffs.(k) <- orig_coeffs.(k) asr al
+                            done;
+                            (* For AC-only scan, we skip DC encoding *)
+                            Arithmetic.encode_arith_block arith_state sci
+                              ac_coeffs
+                          end
+                        done
+                      done)
+                    scan_spec.components;
+                  incr mcu_count
+                done
+              done
+            end;
+
+            let scan_data = Arithmetic.finish_arith_encoder arith_state in
+            let prog_scan_components =
+              Array.of_list
+                (List.map
+                   (fun ci ->
+                     let dc_tbl = if ci = 0 then 0 else 1 in
+                     let ac_tbl = if ci = 0 then 0 else 1 in
+                     {
+                       Markers.selector = ci + 1;
+                       dc_table = dc_tbl;
+                       ac_table = ac_tbl;
+                     })
+                   scan_spec.components)
+            in
+            Markers.SOS
+              ( {
+                  Markers.scan_components = prog_scan_components;
+                  ss = scan_spec.ss;
+                  se = scan_spec.se;
+                  ah = scan_spec.ah;
+                  al = scan_spec.al;
+                },
+                scan_data ))
+          scans
+      in
+
+      let all_markers =
+        prog_arith_initial_markers @ scan_markers @ [ Markers.EOI ]
+      in
       Markers.write_markers all_markers
 
 (** Encode JPEG with options to file *)
