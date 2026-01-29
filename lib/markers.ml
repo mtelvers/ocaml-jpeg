@@ -22,7 +22,12 @@ type component_info = {
 }
 (** Component info in SOF *)
 
+type frame_type =
+  | Baseline
+  | Progressive  (** Frame type - baseline (SOF0) or progressive (SOF2) *)
+
 type frame_header = {
+  frame_type : frame_type;
   precision : int;
   height : int;
   width : int;
@@ -73,6 +78,7 @@ type marker_segment =
   | SOI
   | EOI
   | SOF0 of frame_header
+  | SOF2 of frame_header
   | DHT of huffman_table list
   | DQT of quant_table list
   | DRI of int
@@ -88,15 +94,15 @@ let read_u16 data pos =
   let b2 = Bytes.get_uint8 data (pos + 1) in
   (b1 lsl 8) lor b2
 
-(** Parse SOF0 (Start of Frame - Baseline DCT) *)
-let parse_sof0 data pos content_len =
+(** Parse SOF (Start of Frame) - works for both SOF0 and SOF2 *)
+let parse_sof data pos content_len frame_type =
   let precision = Bytes.get_uint8 data pos in
   let height = read_u16 data (pos + 1) in
   let width = read_u16 data (pos + 3) in
   let num_components = Bytes.get_uint8 data (pos + 5) in
 
   (* content_len = 6 + num_components * 3 (precision + height + width + num_comp + components) *)
-  if content_len <> 6 + (num_components * 3) then failwith "Invalid SOF0 length";
+  if content_len <> 6 + (num_components * 3) then failwith "Invalid SOF length";
 
   let components =
     Array.init num_components (fun i ->
@@ -109,7 +115,7 @@ let parse_sof0 data pos content_len =
         { component_id; h_sampling; v_sampling; quant_table_id })
   in
 
-  { precision; height; width; components }
+  { frame_type; precision; height; width; components }
 
 (** Parse DHT (Define Huffman Table) *)
 let parse_dht data pos len =
@@ -281,9 +287,9 @@ let parse_markers data =
 
           let segment =
             if marker = marker_sof0 then
-              SOF0 (parse_sof0 data content_start content_len)
+              SOF0 (parse_sof data content_start content_len Baseline)
             else if marker = marker_sof2 then
-              failwith "Progressive JPEG (SOF2) is not supported"
+              SOF2 (parse_sof data content_start content_len Progressive)
             else if marker = marker_dht then
               DHT (parse_dht data content_start content_len)
             else if marker = marker_dqt then
@@ -334,9 +340,9 @@ let write_marker buf marker_byte =
   Buffer.add_uint8 buf 0xFF;
   Buffer.add_uint8 buf marker_byte
 
-(** Write SOF0 *)
-let write_sof0 buf frame =
-  write_marker buf marker_sof0;
+(** Write SOF (common for SOF0/SOF2) *)
+let write_sof buf marker_byte frame =
+  write_marker buf marker_byte;
   let len = 8 + (Array.length frame.components * 3) in
   write_u16 buf len;
   Buffer.add_uint8 buf frame.precision;
@@ -349,6 +355,12 @@ let write_sof0 buf frame =
       Buffer.add_uint8 buf ((comp.h_sampling lsl 4) lor comp.v_sampling);
       Buffer.add_uint8 buf comp.quant_table_id)
     frame.components
+
+(** Write SOF0 *)
+let write_sof0 buf frame = write_sof buf marker_sof0 frame
+
+(** Write SOF2 *)
+let write_sof2 buf frame = write_sof buf marker_sof2 frame
 
 (** Write DHT *)
 let write_dht buf tables =
@@ -432,6 +444,7 @@ let write_markers markers =
       | SOI -> write_marker buf marker_soi
       | EOI -> write_marker buf marker_eoi
       | SOF0 frame -> write_sof0 buf frame
+      | SOF2 frame -> write_sof2 buf frame
       | DHT tables -> write_dht buf tables
       | DQT tables -> write_dqt buf tables
       | DRI interval -> write_dri buf interval

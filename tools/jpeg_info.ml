@@ -38,6 +38,21 @@ let show_info filename =
                   comp.component_id comp.h_sampling comp.v_sampling
                   comp.quant_table_id)
               frame.Jpeg.Markers.components
+        | Jpeg.Markers.SOF2 frame ->
+            Printf.printf "  [SOF2] Progressive DCT\n";
+            Printf.printf "    Dimensions: %dx%d\n" frame.Jpeg.Markers.width
+              frame.Jpeg.Markers.height;
+            Printf.printf "    Precision: %d bits\n"
+              frame.Jpeg.Markers.precision;
+            Printf.printf "    Components: %d\n"
+              (Array.length frame.Jpeg.Markers.components);
+            Array.iteri
+              (fun i (comp : Jpeg.Markers.component_info) ->
+                Printf.printf
+                  "      [%d] id=%d, sampling=%dx%d, quant_table=%d\n" i
+                  comp.component_id comp.h_sampling comp.v_sampling
+                  comp.quant_table_id)
+              frame.Jpeg.Markers.components
         | Jpeg.Markers.DHT tables ->
             Printf.printf "  [DHT] Huffman Tables: %d\n" (List.length tables);
             List.iter

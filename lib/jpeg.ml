@@ -31,6 +31,260 @@ type decode_state = {
 }
 (** Decoding state *)
 
+(** Scan types for progressive JPEG *)
+type scan_type =
+  | DC_First (* ss=0, se=0, ah=0: First appearance of DC coefficient *)
+  | DC_Refine (* ss=0, se=0, ah>0: Refinement bit for DC *)
+  | AC_First (* ss>0, ah=0: First appearance of AC coefficients *)
+  | AC_Refine (* ss>0, ah>0: Refinement bits for AC coefficients *)
+
+type progressive_state = {
+  coefficients : int array array array; (* [component][block][coeff] *)
+  eob_run : int ref array; (* EOB run counter per component *)
+}
+(** Progressive decoding state *)
+
+(** Classify scan type from SOS parameters *)
+let classify_scan (scan : Markers.scan_header) =
+  match (scan.ss, scan.ah) with
+  | 0, 0 -> DC_First
+  | 0, _ -> DC_Refine
+  | _, 0 -> AC_First
+  | _, _ -> AC_Refine
+
+(** Initialize progressive state with coefficient storage *)
+let init_progressive_state frame mcus_x mcus_y =
+  let num_components = Array.length frame.Markers.components in
+  let coefficients =
+    Array.init num_components (fun ci ->
+        let comp = frame.Markers.components.(ci) in
+        let h_blocks = mcus_x * comp.Markers.h_sampling in
+        let v_blocks = mcus_y * comp.Markers.v_sampling in
+        let num_blocks = h_blocks * v_blocks in
+        Array.init num_blocks (fun _ -> Array.make 64 0))
+  in
+  let eob_run = Array.init num_components (fun _ -> ref 0) in
+  { coefficients; eob_run }
+
+(** Decode DC coefficient in first scan (DC_First) *)
+let decode_dc_first reader dc_table al prev_dc =
+  let dc_category = Huffman.decode_symbol reader dc_table in
+  let dc_diff =
+    if dc_category = 0 then 0
+    else
+      let bits = Bitstream.read_bits reader dc_category in
+      Huffman.extend bits dc_category
+  in
+  let dc_value = prev_dc + dc_diff in
+  (* Apply successive approximation shift *)
+  (dc_value lsl al, dc_value)
+
+(** Decode DC refinement bit (DC_Refine) *)
+let decode_dc_refine reader al coeff =
+  let bit = Bitstream.read_bits reader 1 in
+  coeff lor (bit lsl al)
+
+(** Decode AC coefficients in first scan (AC_First) *)
+let decode_ac_first reader ac_table ss se al coeffs eob_run =
+  if !eob_run > 0 then begin decr eob_run
+    (* Block is within EOB run - coefficients stay zero *)
+  end
+  else begin
+    let k = ref ss in
+    while !k <= se do
+      let symbol = Huffman.decode_symbol reader ac_table in
+      let run_length = symbol lsr 4 in
+      let size = symbol land 0x0F in
+      if size = 0 then begin
+        if run_length = 15 then begin
+          (* ZRL: 16 zeros *)
+          k := !k + 16
+        end
+        else begin
+          (* EOBn: end of block for n blocks *)
+          eob_run := (1 lsl run_length) - 1;
+          if run_length > 0 then begin
+            let extra = Bitstream.read_bits reader run_length in
+            eob_run := !eob_run + extra
+          end;
+          k := se + 1 (* Exit loop *)
+        end
+      end
+      else begin
+        k := !k + run_length;
+        if !k <= se then begin
+          let bits = Bitstream.read_bits reader size in
+          let value = Huffman.extend bits size in
+          coeffs.(!k) <- value lsl al
+        end;
+        incr k
+      end
+    done
+  end
+
+(** Apply refinement bit to an existing non-zero coefficient *)
+let apply_refine_bit reader coeffs k ~plus ~minus =
+  let bit = Bitstream.read_bits reader 1 in
+  if bit <> 0 then
+    coeffs.(k) <- (coeffs.(k) + if coeffs.(k) > 0 then plus else minus)
+
+(** Decode AC refinement bits (AC_Refine) - most complex scan type *)
+let decode_ac_refine reader ac_table ss se al coeffs eob_run =
+  let plus = 1 lsl al in
+  let minus = -1 lsl al in
+  let k = ref ss in
+
+  (* Refine non-zero coefficients from k to se *)
+  let refine_remaining () =
+    while !k <= se do
+      if coeffs.(!k) <> 0 then apply_refine_bit reader coeffs !k ~plus ~minus;
+      incr k
+    done
+  in
+
+  (* Skip zeros while refining non-zeros, returns true if all zeros skipped *)
+  let skip_zeros_refining count =
+    let remaining = ref count in
+    while !remaining > 0 && !k <= se do
+      if coeffs.(!k) <> 0 then apply_refine_bit reader coeffs !k ~plus ~minus
+      else decr remaining;
+      incr k
+    done
+  in
+
+  if !eob_run > 0 then begin
+    refine_remaining ();
+    decr eob_run
+  end
+  else begin
+    while !k <= se do
+      let symbol = Huffman.decode_symbol reader ac_table in
+      let run_length = symbol lsr 4 in
+      let size = symbol land 0x0F in
+
+      if size = 0 then begin
+        if run_length = 15 then skip_zeros_refining 16
+        else begin
+          (* EOBn *)
+          eob_run := (1 lsl run_length) - 1;
+          if run_length > 0 then
+            eob_run := !eob_run + Bitstream.read_bits reader run_length;
+          refine_remaining ()
+        end
+      end
+      else begin
+        (* size = 1: new non-zero coefficient *)
+        let bit = Bitstream.read_bits reader 1 in
+        let new_value = if bit <> 0 then plus else minus in
+        skip_zeros_refining run_length;
+        if !k <= se then coeffs.(!k) <- new_value;
+        incr k
+      end
+    done
+  end
+
+(** Find component index by selector ID *)
+let find_component_index components selector =
+  let rec find i =
+    if i >= Array.length components then failwith "Component not found"
+    else if components.(i).Markers.component_id = selector then i
+    else find (i + 1)
+  in
+  find 0
+
+(** Decode one progressive scan *)
+let decode_progressive_scan reader frame scan state prog_state mcus_x mcus_y =
+  let scan_type = classify_scan scan in
+  let ss = scan.Markers.ss in
+  let se = scan.Markers.se in
+  let al = scan.Markers.al in
+  let components = frame.Markers.components in
+
+  let num_scan_components = Array.length scan.Markers.scan_components in
+  let prev_dc = Array.make num_scan_components 0 in
+
+  (* Reset EOB runs at start of scan *)
+  Array.iter (fun r -> r := 0) prog_state.eob_run;
+
+  let mcu_count = ref 0 in
+
+  for mcu_y = 0 to mcus_y - 1 do
+    for mcu_x = 0 to mcus_x - 1 do
+      (* Check for restart marker *)
+      if
+        state.restart_interval > 0 && !mcu_count > 0
+        && !mcu_count mod state.restart_interval = 0
+      then begin
+        Bitstream.align_reader reader;
+        Array.fill prev_dc 0 num_scan_components 0;
+        Array.iter (fun r -> r := 0) prog_state.eob_run
+      end;
+
+      (* Process each component in scan *)
+      for sci = 0 to num_scan_components - 1 do
+        let scan_comp = scan.Markers.scan_components.(sci) in
+        let ci = find_component_index components scan_comp.Markers.selector in
+        let comp = components.(ci) in
+        let dc_table = state.dc_tables.(scan_comp.Markers.dc_table) in
+        let ac_table = state.ac_tables.(scan_comp.Markers.ac_table) in
+
+        let h_blocks_total = mcus_x * comp.Markers.h_sampling in
+
+        for v = 0 to comp.Markers.v_sampling - 1 do
+          for h = 0 to comp.Markers.h_sampling - 1 do
+            let bx = (mcu_x * comp.Markers.h_sampling) + h in
+            let by = (mcu_y * comp.Markers.v_sampling) + v in
+            let block_idx = (by * h_blocks_total) + bx in
+            let coeffs = prog_state.coefficients.(ci).(block_idx) in
+
+            match scan_type with
+            | DC_First ->
+                let dc_coeff, new_dc =
+                  decode_dc_first reader dc_table al prev_dc.(sci)
+                in
+                prev_dc.(sci) <- new_dc;
+                coeffs.(0) <- dc_coeff
+            | DC_Refine -> coeffs.(0) <- decode_dc_refine reader al coeffs.(0)
+            | AC_First ->
+                decode_ac_first reader ac_table ss se al coeffs
+                  prog_state.eob_run.(ci)
+            | AC_Refine ->
+                decode_ac_refine reader ac_table ss se al coeffs
+                  prog_state.eob_run.(ci)
+          done
+        done
+      done;
+
+      incr mcu_count
+    done
+  done
+
+(** Finalize progressive decoding: dequantize and IDCT all blocks *)
+let finalize_progressive frame prog_state quant_tables mcus_x mcus_y =
+  let num_components = Array.length frame.Markers.components in
+
+  let component_blocks =
+    Array.init num_components (fun ci ->
+        let comp = frame.Markers.components.(ci) in
+        let h_blocks = mcus_x * comp.Markers.h_sampling in
+        let v_blocks = mcus_y * comp.Markers.v_sampling in
+        let num_blocks = h_blocks * v_blocks in
+        let quant_table = quant_tables.(comp.Markers.quant_table_id) in
+
+        Array.init num_blocks (fun block_idx ->
+            let coeffs = prog_state.coefficients.(ci).(block_idx) in
+            (* Dequantize *)
+            let dequant =
+              Quantization.dequantize coeffs quant_table.Markers.values
+            in
+            (* IDCT *)
+            let spatial = Dct.idct dequant in
+            (* Level shift and clamp *)
+            Color.level_shift_block_up spatial))
+  in
+
+  component_blocks
+
 (** Create initial decode state *)
 let create_decode_state () =
   {
@@ -52,6 +306,7 @@ let process_markers markers =
     (fun segment ->
       match segment with
       | Markers.SOF0 frame -> state.frame <- Some frame
+      | Markers.SOF2 frame -> state.frame <- Some frame
       | Markers.DQT tables ->
           List.iter
             (fun (qt : Markers.quant_table) ->
@@ -311,42 +566,96 @@ let reconstruct_image frame component_blocks =
     pixels
   end
 
+(** Decode baseline JPEG (single scan) *)
+let decode_baseline markers frame state =
+  (* Find and decode scan data *)
+  let scan_data =
+    List.find_map
+      (fun m ->
+        match m with
+        | Markers.SOS (header, data) -> Some (header, data)
+        | _ -> None)
+      markers
+  in
+
+  match scan_data with
+  | None -> failwith "No scan data found"
+  | Some (scan_header, entropy_data) ->
+      let reader = Bitstream.create_reader entropy_data in
+      let component_blocks =
+        decode_interleaved_scan reader frame scan_header state
+      in
+      reconstruct_image frame component_blocks
+
+(** Decode progressive JPEG (multiple scans) *)
+let decode_progressive markers frame state =
+  let components = frame.Markers.components in
+
+  (* Calculate MCU dimensions *)
+  let max_h =
+    Array.fold_left (fun m c -> max m c.Markers.h_sampling) 1 components
+  in
+  let max_v =
+    Array.fold_left (fun m c -> max m c.Markers.v_sampling) 1 components
+  in
+
+  let mcu_width = max_h * 8 in
+  let mcu_height = max_v * 8 in
+  let mcus_x = (frame.Markers.width + mcu_width - 1) / mcu_width in
+  let mcus_y = (frame.Markers.height + mcu_height - 1) / mcu_height in
+
+  (* Initialize progressive state *)
+  let prog_state = init_progressive_state frame mcus_x mcus_y in
+
+  (* Process markers in order, updating Huffman tables as we go *)
+  List.iter
+    (fun marker ->
+      match marker with
+      | Markers.DHT tables ->
+          (* Update Huffman tables before next scan *)
+          List.iter
+            (fun (ht : Markers.huffman_table) ->
+              let table = Huffman.build_table ht.counts ht.values in
+              if ht.table_class = 0 then state.dc_tables.(ht.table_id) <- table
+              else state.ac_tables.(ht.table_id) <- table)
+            tables
+      | Markers.SOS (scan_header, entropy_data) ->
+          let reader = Bitstream.create_reader entropy_data in
+          decode_progressive_scan reader frame scan_header state prog_state
+            mcus_x mcus_y
+      | _ -> ())
+    markers;
+
+  (* Finalize: dequantize and IDCT all blocks *)
+  let component_blocks =
+    finalize_progressive frame prog_state state.quant_tables mcus_x mcus_y
+  in
+
+  reconstruct_image frame component_blocks
+
 (** Decode JPEG from bytes *)
 let read_bytes data =
   let markers = Markers.parse_markers data in
   let state = process_markers markers in
 
   match state.frame with
-  | None -> failwith "No SOF0 marker found"
-  | Some frame -> (
+  | None -> failwith "No SOF marker found"
+  | Some frame ->
       if frame.Markers.precision <> 8 then
         failwith "Only 8-bit precision is supported";
 
-      (* Find and decode scan data *)
-      let scan_data =
-        List.find_map
-          (fun m ->
-            match m with
-            | Markers.SOS (header, data) -> Some (header, data)
-            | _ -> None)
-          markers
+      let pixels =
+        match frame.Markers.frame_type with
+        | Markers.Baseline -> decode_baseline markers frame state
+        | Markers.Progressive -> decode_progressive markers frame state
       in
 
-      match scan_data with
-      | None -> failwith "No scan data found"
-      | Some (scan_header, entropy_data) ->
-          let reader = Bitstream.create_reader entropy_data in
-          let component_blocks =
-            decode_interleaved_scan reader frame scan_header state
-          in
-          let pixels = reconstruct_image frame component_blocks in
-
-          {
-            width = frame.Markers.width;
-            height = frame.Markers.height;
-            pixels;
-            exif = state.exif;
-          })
+      {
+        width = frame.Markers.width;
+        height = frame.Markers.height;
+        pixels;
+        exif = state.exif;
+      }
 
 (** Read JPEG from file *)
 let read filename =
@@ -527,6 +836,7 @@ let write_bytes ?(quality = 75) image =
         (* Frame header *)
         Markers.SOF0
           {
+            frame_type = Markers.Baseline;
             precision = 8;
             height;
             width;

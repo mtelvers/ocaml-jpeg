@@ -223,6 +223,71 @@ let test_markers_basic () =
   | [ Markers.SOI; Markers.EOI ] -> ()
   | _ -> Alcotest.fail "Expected SOI and EOI markers"
 
+(** Test progressive JPEG decoding *)
+let test_progressive_decode () =
+  (* Read progressive JPEG test image *)
+  let filename = "test_images/progressive_gradient.jpg" in
+  if not (Sys.file_exists filename) then Alcotest.skip ()
+  else begin
+    let image = Jpeg.read filename in
+    Alcotest.(check int) "Progressive width" 64 image.Jpeg.width;
+    Alcotest.(check int) "Progressive height" 64 image.Jpeg.height;
+
+    (* Verify we can read pixels without error *)
+    let r, g, b = Jpeg.get_pixel image 0 0 in
+    Alcotest.(check bool) "Valid pixel" true (r >= 0 && g >= 0 && b >= 0)
+  end
+
+(** Test that baseline JPEG still has correct frame type *)
+let test_baseline_frame_type () =
+  let filename = "test_images/test_gradient.jpg" in
+  if not (Sys.file_exists filename) then Alcotest.skip ()
+  else begin
+    let ic = open_in_bin filename in
+    let len = in_channel_length ic in
+    let data = Bytes.create len in
+    really_input ic data 0 len;
+    close_in ic;
+
+    let markers = Markers.parse_markers data in
+    let frame =
+      List.find_map
+        (fun m -> match m with Markers.SOF0 f -> Some f | _ -> None)
+        markers
+    in
+    match frame with
+    | None -> Alcotest.fail "No SOF0 marker found"
+    | Some f ->
+        Alcotest.(check bool)
+          "Is baseline" true
+          (f.Markers.frame_type = Markers.Baseline)
+  end
+
+(** Test that progressive JPEG has correct frame type *)
+let test_progressive_frame_type () =
+  let filename = "test_images/progressive_gradient.jpg" in
+  if not (Sys.file_exists filename) then Alcotest.skip ()
+  else begin
+    let ic = open_in_bin filename in
+    let len = in_channel_length ic in
+    let data = Bytes.create len in
+    really_input ic data 0 len;
+    close_in ic;
+
+    let markers = Markers.parse_markers data in
+    let frame =
+      List.find_map
+        (fun m -> match m with Markers.SOF2 f -> Some f | _ -> None)
+        markers
+    in
+    match frame with
+    | None -> Alcotest.fail "No SOF2 marker found"
+    | Some f ->
+        Alcotest.(check bool)
+          "Is progressive" true
+          (f.Markers.frame_type = Markers.Progressive)
+  end
+
 (** All tests *)
 let () =
   Alcotest.run "JPEG Library"
@@ -248,4 +313,12 @@ let () =
         ] );
       ("exif", [ Alcotest.test_case "minimal" `Quick test_exif_minimal ]);
       ("markers", [ Alcotest.test_case "basic" `Quick test_markers_basic ]);
+      ( "progressive",
+        [
+          Alcotest.test_case "decode" `Quick test_progressive_decode;
+          Alcotest.test_case "baseline-frame-type" `Quick
+            test_baseline_frame_type;
+          Alcotest.test_case "progressive-frame-type" `Quick
+            test_progressive_frame_type;
+        ] );
     ]
