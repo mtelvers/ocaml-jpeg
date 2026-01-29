@@ -53,6 +53,22 @@ let show_info filename =
                   comp.component_id comp.h_sampling comp.v_sampling
                   comp.quant_table_id)
               frame.Jpeg.Markers.components
+        | Jpeg.Markers.SOF9 frame ->
+            Printf.printf "  [SOF9] Sequential Arithmetic\n";
+            Printf.printf "    Dimensions: %dx%d\n" frame.Jpeg.Markers.width
+              frame.Jpeg.Markers.height;
+            Printf.printf "    Precision: %d bits\n"
+              frame.Jpeg.Markers.precision;
+            Printf.printf "    Components: %d\n"
+              (Array.length frame.Jpeg.Markers.components)
+        | Jpeg.Markers.SOF10 frame ->
+            Printf.printf "  [SOF10] Progressive Arithmetic\n";
+            Printf.printf "    Dimensions: %dx%d\n" frame.Jpeg.Markers.width
+              frame.Jpeg.Markers.height;
+            Printf.printf "    Precision: %d bits\n"
+              frame.Jpeg.Markers.precision;
+            Printf.printf "    Components: %d\n"
+              (Array.length frame.Jpeg.Markers.components)
         | Jpeg.Markers.DHT tables ->
             Printf.printf "  [DHT] Huffman Tables: %d\n" (List.length tables);
             List.iter
@@ -60,6 +76,14 @@ let show_info filename =
                 let total = Array.fold_left ( + ) 0 t.counts in
                 Printf.printf "    Class=%d (DC/AC), ID=%d, %d symbols\n"
                   t.table_class t.table_id total)
+              tables
+        | Jpeg.Markers.DAC tables ->
+            Printf.printf "  [DAC] Arithmetic Conditioning: %d\n"
+              (List.length tables);
+            List.iter
+              (fun (t : Jpeg.Markers.arithmetic_conditioning) ->
+                Printf.printf "    Class=%d (DC/AC), ID=%d, value=%d\n"
+                  t.table_class t.table_id t.conditioning_value)
               tables
         | Jpeg.Markers.DQT tables ->
             Printf.printf "  [DQT] Quantization Tables: %d\n"

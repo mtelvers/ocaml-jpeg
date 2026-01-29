@@ -2,4 +2,13 @@
  (name jpeg)
  (public_name jpeg)
  (libraries bigarray)
- (modules jpeg markers huffman dct quantization color bitstream exif))
+ (modules
+  jpeg
+  markers
+  huffman
+  dct
+  quantization
+  color
+  bitstream
+  exif
+  arithmetic))

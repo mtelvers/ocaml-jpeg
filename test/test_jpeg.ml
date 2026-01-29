@@ -471,6 +471,7 @@ let test_options_combinations () =
                   encoding_mode = enc;
                   restart_interval = 0;
                   precision = Jpeg.Precision_8;
+                  entropy_coding = Jpeg.Huffman;
                 }
               in
               let data = Jpeg.write_bytes_with_options options image in
@@ -538,6 +539,7 @@ let test_progressive_grayscale () =
       encoding_mode = Jpeg.Progressive;
       restart_interval = 0;
       precision = Jpeg.Precision_8;
+      entropy_coding = Jpeg.Huffman;
     }
   in
   let data = Jpeg.write_bytes_with_options options image in
@@ -929,6 +931,49 @@ let test_cmyk_roundtrip () =
   Alcotest.(check bool) "Y in range" true (y >= 0 && y <= 255);
   Alcotest.(check bool) "K in range" true (k >= 0 && k <= 255)
 
+(** Test QM-coder basic encoding/decoding roundtrip *)
+let test_qm_coder_basic () =
+  let module Arith = Jpeg.Arithmetic in
+  (* Encode a sequence of binary decisions *)
+  let encoder = Arith.init_encoder () in
+  let ctx = Arith.create_context () in
+
+  (* Encode pattern: 0, 0, 1, 0, 1, 1, 0 *)
+  let pattern = [| 0; 0; 1; 0; 1; 1; 0 |] in
+  Array.iter (Arith.encode ctx encoder) pattern;
+
+  let data = Arith.flush_encoder encoder in
+  Alcotest.(check bool) "Data produced" true (Bytes.length data > 0);
+
+  (* Decode the data back *)
+  let decoder = Arith.init_decoder_bytes data in
+  let ctx2 = Arith.create_context () in
+
+  let decoded =
+    Array.init (Array.length pattern) (fun _ -> Arith.decode ctx2 decoder)
+  in
+
+  (* Verify roundtrip *)
+  Array.iteri
+    (fun i expected ->
+      Alcotest.(check int) (Printf.sprintf "Decision %d" i) expected decoded.(i))
+    pattern
+
+(** Test arithmetic context state transitions *)
+let test_arithmetic_context () =
+  let module Arith = Jpeg.Arithmetic in
+  let ctx = Arith.create_context () in
+
+  (* Initial state *)
+  Alcotest.(check int) "Initial index" 0 ctx.index;
+  Alcotest.(check int) "Initial MPS" 0 ctx.mps;
+
+  (* Verify context can be created for DC/AC *)
+  let dc_contexts = Arith.create_dc_contexts () in
+  let ac_contexts = Arith.create_ac_contexts () in
+  Alcotest.(check int) "DC contexts count" 10 (Array.length dc_contexts);
+  Alcotest.(check int) "AC contexts count" 252 (Array.length ac_contexts)
+
 (** All tests *)
 let () =
   Alcotest.run "JPEG Library"
@@ -1008,5 +1053,10 @@ let () =
           Alcotest.test_case "color-conversion" `Quick
             test_ycck_color_conversion;
           Alcotest.test_case "encode" `Quick test_ycck_encode;
+        ] );
+      ( "arithmetic",
+        [
+          Alcotest.test_case "qm-coder-basic" `Quick test_qm_coder_basic;
+          Alcotest.test_case "context-state" `Quick test_arithmetic_context;
         ] );
     ]

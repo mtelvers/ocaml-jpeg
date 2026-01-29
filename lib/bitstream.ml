@@ -54,6 +54,24 @@ let rec read_byte_internal reader =
         b)
   else b
 
+(** Read a single byte with byte stuffing only (no RST marker handling). For use
+    with arithmetic coding. *)
+let read_byte_stuffed reader =
+  if reader.pos >= Bytes.length reader.data then raise End_of_file;
+  let b = Bytes.get_uint8 reader.data reader.pos in
+  reader.pos <- reader.pos + 1;
+  if b = 0xFF && reader.pos < Bytes.length reader.data then begin
+    let next = Bytes.get_uint8 reader.data reader.pos in
+    if next = 0x00 then reader.pos <- reader.pos + 1
+    (* skip stuffed 00 *)
+  end;
+  b
+
+(** Read a single byte handling both byte stuffing and RST markers *)
+let read_byte reader =
+  reader.bit_pos <- 8;
+  read_byte_internal reader
+
 (** Read a single bit (returns 0 or 1) *)
 let read_bit reader =
   if reader.bit_pos >= 8 then begin

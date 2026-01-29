@@ -6,7 +6,10 @@ let marker_soi = 0xD8 (* Start of Image *)
 let marker_eoi = 0xD9 (* End of Image *)
 let marker_sof0 = 0xC0 (* Start of Frame (Baseline DCT) *)
 let marker_sof2 = 0xC2 (* Start of Frame (Progressive DCT) *)
+let marker_sof9 = 0xC9 (* Start of Frame (Extended sequential, arithmetic) *)
+let marker_sof10 = 0xCA (* Start of Frame (Progressive, arithmetic) *)
 let marker_dht = 0xC4 (* Define Huffman Table *)
+let marker_dac = 0xCC (* Define Arithmetic Conditioning *)
 let marker_dqt = 0xDB (* Define Quantization Table *)
 let marker_dri = 0xDD (* Define Restart Interval *)
 let marker_sos = 0xDA (* Start of Scan *)
@@ -23,8 +26,18 @@ type component_info = {
 (** Component info in SOF *)
 
 type frame_type =
-  | Baseline
-  | Progressive  (** Frame type - baseline (SOF0) or progressive (SOF2) *)
+  | Baseline  (** SOF0: Baseline DCT, Huffman coding *)
+  | Progressive  (** SOF2: Progressive DCT, Huffman coding *)
+  | ArithmeticSequential  (** SOF9: Extended sequential, arithmetic coding *)
+  | ArithmeticProgressive  (** SOF10: Progressive, arithmetic coding *)
+
+type arithmetic_conditioning = {
+  table_class : int; (* 0 = DC, 1 = AC *)
+  table_id : int;
+  conditioning_value : int;
+      (* Cs for DC tables (0-255), Kx for AC tables (1-63) *)
+}
+(** Arithmetic conditioning table entry *)
 
 type frame_header = {
   frame_type : frame_type;
@@ -79,7 +92,10 @@ type marker_segment =
   | EOI
   | SOF0 of frame_header
   | SOF2 of frame_header
+  | SOF9 of frame_header  (** Extended sequential, arithmetic coding *)
+  | SOF10 of frame_header  (** Progressive, arithmetic coding *)
   | DHT of huffman_table list
+  | DAC of arithmetic_conditioning list  (** Arithmetic conditioning tables *)
   | DQT of quant_table list
   | DRI of int
   | SOS of scan_header * bytes (* header + entropy-coded data *)
@@ -138,6 +154,21 @@ let parse_dht data pos len =
 
       let table = { table_class; table_id; counts; values } in
       parse_tables (offset + 17 + total_symbols) (table :: tables)
+    end
+  in
+  parse_tables pos []
+
+(** Parse DAC (Define Arithmetic Conditioning) *)
+let parse_dac data pos len =
+  let rec parse_tables offset tables =
+    if offset >= pos + len - 2 then List.rev tables
+    else begin
+      let info = Bytes.get_uint8 data offset in
+      let table_class = info lsr 4 in
+      let table_id = info land 0x0F in
+      let conditioning_value = Bytes.get_uint8 data (offset + 1) in
+      let table = { table_class; table_id; conditioning_value } in
+      parse_tables (offset + 2) (table :: tables)
     end
   in
   parse_tables pos []
@@ -283,8 +314,16 @@ let parse_markers data =
               SOF0 (parse_sof data content_start content_len Baseline)
             else if marker = marker_sof2 then
               SOF2 (parse_sof data content_start content_len Progressive)
+            else if marker = marker_sof9 then
+              SOF9
+                (parse_sof data content_start content_len ArithmeticSequential)
+            else if marker = marker_sof10 then
+              SOF10
+                (parse_sof data content_start content_len ArithmeticProgressive)
             else if marker = marker_dht then
               DHT (parse_dht data content_start content_len)
+            else if marker = marker_dac then
+              DAC (parse_dac data content_start content_len)
             else if marker = marker_dqt then
               DQT (parse_dqt data content_start content_len)
             else if marker = marker_dri then DRI (read_u16 data content_start)
@@ -355,6 +394,12 @@ let write_sof0 buf frame = write_sof buf marker_sof0 frame
 (** Write SOF2 *)
 let write_sof2 buf frame = write_sof buf marker_sof2 frame
 
+(** Write SOF9 *)
+let write_sof9 buf frame = write_sof buf marker_sof9 frame
+
+(** Write SOF10 *)
+let write_sof10 buf frame = write_sof buf marker_sof10 frame
+
 (** Write DHT *)
 let write_dht buf tables =
   List.iter
@@ -367,6 +412,19 @@ let write_dht buf tables =
       Array.iter (fun c -> Buffer.add_uint8 buf c) table.counts;
       Array.iter (fun v -> Buffer.add_uint8 buf v) table.values)
     tables
+
+(** Write DAC (Define Arithmetic Conditioning) *)
+let write_dac buf (tables : arithmetic_conditioning list) =
+  if tables <> [] then begin
+    write_marker buf marker_dac;
+    let len = 2 + (List.length tables * 2) in
+    write_u16 buf len;
+    List.iter
+      (fun (table : arithmetic_conditioning) ->
+        Buffer.add_uint8 buf ((table.table_class lsl 4) lor table.table_id);
+        Buffer.add_uint8 buf table.conditioning_value)
+      tables
+  end
 
 (** Write DQT with support for 8-bit and 16-bit precision *)
 let write_dqt buf tables =
@@ -440,7 +498,10 @@ let write_markers markers =
       | EOI -> write_marker buf marker_eoi
       | SOF0 frame -> write_sof0 buf frame
       | SOF2 frame -> write_sof2 buf frame
+      | SOF9 frame -> write_sof9 buf frame
+      | SOF10 frame -> write_sof10 buf frame
       | DHT tables -> write_dht buf tables
+      | DAC tables -> write_dac buf tables
       | DQT tables -> write_dqt buf tables
       | DRI interval -> write_dri buf interval
       | SOS (header, data) ->

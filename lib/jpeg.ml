@@ -8,6 +8,7 @@ module Dct = Dct
 module Quantization = Quantization
 module Color = Color
 module Exif = Exif
+module Arithmetic = Arithmetic
 
 (** Pixel format for image data *)
 type pixel_format =
@@ -43,6 +44,9 @@ type encoding_mode = Baseline | Progressive
 (** Bit precision for sample values *)
 type precision = Precision_8 | Precision_12
 
+(** Entropy coding method *)
+type entropy_coding = Huffman | Arithmetic
+
 type encode_options = {
   quality : int;
   subsampling : subsampling;
@@ -50,6 +54,7 @@ type encode_options = {
   encoding_mode : encoding_mode;
   restart_interval : int;  (** MCUs between RST markers, 0 = disabled *)
   precision : precision;  (** Sample precision: 8-bit or 12-bit *)
+  entropy_coding : entropy_coding;  (** Huffman or arithmetic coding *)
 }
 (** Encoding options *)
 
@@ -61,6 +66,7 @@ let default_encode_options =
     encoding_mode = Baseline;
     restart_interval = 0;
     precision = Precision_8;
+    entropy_coding = Huffman;
   }
 
 type decode_state = {
@@ -364,6 +370,8 @@ let process_markers markers =
       match segment with
       | Markers.SOF0 frame -> state.frame <- Some frame
       | Markers.SOF2 frame -> state.frame <- Some frame
+      | Markers.SOF9 frame -> state.frame <- Some frame
+      | Markers.SOF10 frame -> state.frame <- Some frame
       | Markers.DQT tables ->
           List.iter
             (fun (qt : Markers.quant_table) ->
@@ -717,6 +725,10 @@ let read_bytes data =
         match frame.Markers.frame_type with
         | Markers.Baseline -> decode_baseline markers frame state
         | Markers.Progressive -> decode_progressive markers frame state
+        | Markers.ArithmeticSequential ->
+            failwith "Arithmetic sequential JPEG decoding not yet implemented"
+        | Markers.ArithmeticProgressive ->
+            failwith "Arithmetic progressive JPEG decoding not yet implemented"
       in
 
       {

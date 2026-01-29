@@ -3,6 +3,7 @@
     Supported features:
     - Baseline sequential DCT JPEG (SOF0)
     - Progressive DCT JPEG (SOF2)
+    - Arithmetic coding JPEG (SOF9, SOF10) - parsing support
     - 8-bit and 12-bit precision
     - Grayscale, YCbCr, CMYK, and YCCK color (1, 3, or 4 components)
     - Standard Huffman coding
@@ -20,6 +21,7 @@ module Dct = Dct
 module Quantization = Quantization
 module Color = Color
 module Exif = Exif
+module Arithmetic = Arithmetic
 
 (** {1 Types} *)
 
@@ -79,6 +81,13 @@ type precision =
           - [Precision_8]: 8-bit samples (0-255, standard)
           - [Precision_12]: 12-bit samples (0-4095, extended range) *)
 
+type entropy_coding =
+  | Huffman
+  | Arithmetic
+      (** Entropy coding method:
+          - [Huffman]: Standard Huffman coding (most compatible)
+          - [Arithmetic]: Arithmetic coding (smaller files, less compatible) *)
+
 type encode_options = {
   quality : int;  (** Compression quality from 1 (worst) to 100 (best) *)
   subsampling : subsampling;  (** Chroma subsampling mode *)
@@ -86,12 +95,13 @@ type encode_options = {
   encoding_mode : encoding_mode;  (** Baseline or progressive *)
   restart_interval : int;  (** MCUs between RST markers, 0 = disabled *)
   precision : precision;  (** Sample precision: 8-bit or 12-bit *)
+  entropy_coding : entropy_coding;  (** Huffman or arithmetic coding *)
 }
 (** Encoding options for JPEG output. *)
 
 val default_encode_options : encode_options
 (** Default encoding options: quality=75, Sub_420, Color, Baseline,
-    restart_interval=0, Precision_8 *)
+    restart_interval=0, Precision_8, Huffman *)
 
 (** {1 Reading JPEG} *)
 
