@@ -1,0 +1,12 @@
+(executable
+ (name jpeg_viewer)
+ (libraries jpeg graphics)
+ (optional))
+
+(executable
+ (name jpeg_to_ppm)
+ (libraries jpeg))
+
+(executable
+ (name jpeg_info)
+ (libraries jpeg))

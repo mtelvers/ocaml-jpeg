@@ -1,0 +1,3 @@
+(executables
+ (names jpeg_demo file_test real_jpeg_test)
+ (libraries jpeg))
