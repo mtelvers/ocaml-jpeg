@@ -10,7 +10,7 @@
 let qm_table =
   [|
     (* Index 0-9 *)
-    (0x5A1D, 1, 1, 1);
+    (0x5A1D, 1, 1, 0);
     (0x2586, 2, 6, 0);
     (0x1114, 3, 9, 0);
     (0x080B, 4, 12, 0);
@@ -179,162 +179,131 @@ let create_context_with_index idx = { index = idx; mps = 0 }
 
 type jpeg_decoder_state = {
   mutable a : int; (* Interval register, 16-bit *)
-  mutable c : int; (* Code register, 32-bit (using lower bits) *)
-  mutable ct : int; (* Bit counter *)
+  mutable c : int; (* Code register, 32-bit *)
+  mutable ct : int; (* Bit counter - can be negative during init! *)
   mutable data : bytes; (* Input data *)
   mutable pos : int; (* Current byte position *)
-  mutable buffer : int; (* Current byte buffer *)
-  mutable next_byte : int; (* Next byte (for marker detection) *)
+  mutable marker_found : bool; (* True if we hit a marker *)
 }
 (** JPEG arithmetic decoder state per ITU-T T.81 *)
 
-(** Read a byte from input, handling byte stuffing (FF00 -> FF) *)
-let read_byte_stuffed state =
-  if state.pos >= Bytes.length state.data then 0xFF (* Pad with 0xFF at end *)
+(* Debug flag for decode tracing *)
+let debug_decode = ref false
+
+(** Read next byte from input, handling stuffing (libjpeg style) *)
+let rec get_byte state =
+  if state.marker_found then 0
+  else if state.pos >= Bytes.length state.data then 0
   else begin
     let b = Bytes.get_uint8 state.data state.pos in
     state.pos <- state.pos + 1;
-    (* Handle byte stuffing: after 0xFF, skip the 0x00 *)
-    if b = 0xFF && state.pos < Bytes.length state.data then begin
-      let next = Bytes.get_uint8 state.data state.pos in
-      if next = 0x00 then state.pos <- state.pos + 1
-      (* Skip stuffed byte *)
-      (* If next is a marker (not 0x00), we've hit the end of entropy data *)
-    end;
-    b
-  end
-
-(** Initialize the JPEG arithmetic decoder (INITDEC procedure from T.81 D.2.6)
-*)
-let init_jpeg_decoder data =
-  let state =
-    { a = 0; c = 0; ct = 0; data; pos = 0; buffer = 0; next_byte = 0 }
-  in
-
-  (* Read first two bytes into C register *)
-  let b1 = read_byte_stuffed state in
-  let b2 = read_byte_stuffed state in
-
-  (* C = (B1 << 8) | B2, shifted left by 16 for 32-bit register *)
-  state.c <- ((b1 lsl 8) lor b2) lsl 16;
-
-  (* Initialize A to 0x10000 (will be normalized) *)
-  state.a <- 0x10000;
-
-  (* CT = 0 initially, first renormalization will set it up *)
-  state.ct <- 0;
-
-  (* Perform initial renormalization to get A into proper range *)
-  (* Actually per spec, we need to do BYTEIN first *)
-  state.ct <- 16;
-
-  (* We've already read 16 bits *)
-  state
-
-(** Byte-in procedure (BYTEIN from T.81 D.2.7) - shift in new byte when needed
-*)
-let bytein state =
-  if state.pos < Bytes.length state.data then begin
-    let b = Bytes.get_uint8 state.data state.pos in
-    state.pos <- state.pos + 1;
-
-    if state.buffer = 0xFF then begin
-      (* Previous byte was FF - check for stuffing or marker *)
-      if b = 0x00 then begin
-        (* Stuffed byte: use 0xFF, b becomes part of next byte *)
-        state.c <- state.c + (0xFF00 lsl (8 - state.ct));
-        state.ct <- state.ct + 8
-      end
+    if b = 0xFF then begin
+      (* Check for stuffing or marker *)
+      if state.pos >= Bytes.length state.data then 0
       else begin
-        (* Marker detected - don't consume, just pad with zeros *)
-        state.pos <- state.pos - 1;
-        (* Put back the marker byte *)
-        state.c <- state.c + (0xFF00 lsl (8 - state.ct));
-        state.ct <- state.ct + 8
-      end
-    end
-    else begin
-      state.c <- state.c + (b lsl (8 - state.ct));
-      state.ct <- state.ct + 8
-    end;
-    state.buffer <- b
-  end
-  else begin
-    (* End of data - pad with 0xFF *)
-    state.c <- state.c + (0xFF lsl (8 - state.ct));
-    state.ct <- state.ct + 8;
-    state.buffer <- 0xFF
-  end
-
-(** Renormalize decoder (RENORMD from T.81 D.2.5) *)
-let renormd state =
-  while state.a < 0x8000 do
-    if state.ct = 0 then bytein state;
-    state.a <- state.a lsl 1;
-    state.c <- state.c lsl 1;
-    state.ct <- state.ct - 1
-  done;
-  (* Keep C in 32-bit range *)
-  state.c <- state.c land 0xFFFFFFFF
-
-(** Decode a single binary decision (DECODE from T.81 D.2.4) *)
-let decode_decision ctx state =
-  let qe = get_qe ctx.index in
-
-  (* A = A - Qe *)
-  state.a <- state.a - qe;
-
-  (* Chigh = C >> 16 (upper 16 bits of C) *)
-  let chigh = state.c lsr 16 in
-
-  let d =
-    if chigh < state.a then begin
-      (* MPS path *)
-      if state.a < 0x8000 then begin
-        (* Conditional exchange *)
-        if state.a < qe then begin
-          (* LPS and MPS exchange *)
-          let result = 1 - ctx.mps in
-          if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
-          ctx.index <- get_nlps ctx.index;
-          result
+        let next = Bytes.get_uint8 state.data state.pos in
+        if next = 0x00 then begin
+          (* Stuffed zero - skip it and use 0xFF *)
+          state.pos <- state.pos + 1;
+          0xFF
+        end
+        else if next = 0xFF then begin
+          (* Multiple 0xFF bytes - skip and recurse *)
+          state.pos <- state.pos + 1;
+          get_byte state
         end
         else begin
-          ctx.index <- get_nmps ctx.index;
-          ctx.mps
+          (* Marker found - don't consume it, return 0 *)
+          state.marker_found <- true;
+          0
         end
       end
-      else begin
-        (* No renormalization needed, definitely MPS *)
-        ctx.mps
+    end
+    else b
+  end
+
+(** Initialize the JPEG arithmetic decoder (libjpeg style)
+    CT starts at -16 to force reading 2 initial bytes during first renorm *)
+let init_jpeg_decoder data =
+  { a = 0; c = 0; ct = -16; data; pos = 0; marker_found = false }
+
+(** Decode a single binary decision (DECODE - exact libjpeg algorithm)
+
+    This implements the core arithmetic decode from ITU-T T.81 D.2.4-D.2.6
+    with libjpeg's optimization of a floating cut-point in the C register.
+
+    CT tracks the bit position: negative during init, 0-7 during normal decode.
+    The comparison threshold is shifted by CT to match C's current alignment.
+*)
+let decode_decision ctx state =
+  (* Renormalization & data input per section D.2.6 *)
+  while state.a < 0x8000 do
+    state.ct <- state.ct - 1;
+    if state.ct < 0 then begin
+      (* Need to fetch next data byte *)
+      let data = get_byte state in
+      state.c <- ((state.c lsl 8) lor data) land 0xFFFFFFFF;
+      state.ct <- state.ct + 8;
+      if state.ct < 0 then begin
+        (* Need more initial bytes *)
+        state.ct <- state.ct + 1;
+        if state.ct = 0 then
+          (* Got 2 initial bytes -> set A to exit loop after shift *)
+          state.a <- 0x8000
       end
+    end;
+    state.a <- state.a lsl 1
+  done;
+
+  let qe = get_qe ctx.index in
+
+  (* Decode & estimation procedures per sections D.2.4 & D.2.5 *)
+  let temp = state.a - qe in
+  state.a <- temp;
+  let threshold = temp lsl state.ct in
+
+  if !debug_decode then
+    Printf.printf "  decode: a=0x%04x c=0x%08x ct=%d threshold=0x%08x, c>=threshold? %b\n"
+      state.a state.c state.ct threshold (state.c >= threshold);
+
+  if state.c >= threshold then begin
+    (* LPS path: C >= threshold *)
+    state.c <- state.c - threshold;
+    if state.a < qe then begin
+      (* Conditional exchange - this is actually MPS *)
+      state.a <- qe;
+      ctx.index <- get_nmps ctx.index;
+      ctx.mps
     end
     else begin
-      (* LPS path: C >= A *)
-      (* C = C - (A << 16) *)
-      state.c <- state.c - (state.a lsl 16);
-
-      if state.a < qe then begin
-        (* Conditional exchange - this is actually MPS *)
-        state.a <- qe;
-        ctx.index <- get_nmps ctx.index;
-        ctx.mps
-      end
-      else begin
-        (* Normal LPS *)
-        state.a <- qe;
-        let result = 1 - ctx.mps in
-        if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
-        ctx.index <- get_nlps ctx.index;
-        result
-      end
+      (* Normal LPS *)
+      state.a <- qe;
+      let result = 1 - ctx.mps in
+      if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
+      ctx.index <- get_nlps ctx.index;
+      result
     end
-  in
-
-  (* Renormalize if needed *)
-  if state.a < 0x8000 then renormd state;
-
-  d
+  end
+  else if state.a < 0x8000 then begin
+    (* MPS path with conditional exchange check *)
+    if state.a < qe then begin
+      (* Conditional exchange - this is actually LPS *)
+      let result = 1 - ctx.mps in
+      if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
+      ctx.index <- get_nlps ctx.index;
+      result
+    end
+    else begin
+      (* Normal MPS *)
+      ctx.index <- get_nmps ctx.index;
+      ctx.mps
+    end
+  end
+  else begin
+    (* MPS path - A >= 0x8000, no renorm needed, no context update *)
+    (* Per ITU-T T.81: context is only updated when renormalization occurs *)
+    ctx.mps
+  end
 
 (** Initialize decoder from bitstream reader position *)
 let init_jpeg_decoder_from_reader reader =
@@ -658,51 +627,91 @@ let ensure_capacity state needed =
     state.output_cap <- new_cap
   end
 
-(** Output a byte with byte stuffing (BYTEOUT procedure from T.81 D.1.5) *)
+(* Debug flag for tracing - set to true to enable *)
+let debug_byteout = ref false
+
+(** Output a byte with byte stuffing (BYTEOUT procedure from T.81 D.1.5)
+
+    This implements the "modification for efficiency" version that uses
+    stacked 0xFF bytes (ST) to defer carry propagation.
+
+    Per ITU-T T.81:
+    - B is the buffer holding the previous byte (0x00-0xFF)
+    - ST counts stacked 0xFF bytes awaiting carry resolution
+    - When carry occurs (Temp > 0xFF), we increment B by exactly 1
+    - If B becomes 0xFF after increment, we stack it
+    - Otherwise we output stacked 0xFFs (with stuffing) then output B
+*)
 let byteout state =
-  ensure_capacity state 2;
+  ensure_capacity state 4;
+
+  if !debug_byteout then
+    Printf.printf "byteout enter: c=0x%08x ct=%d st=%d bp=%d buffer=0x%x output_pos=%d\n"
+      state.c state.ct state.st state.bp state.buffer state.output_pos;
+
+  (* Extract byte from bits 19-26 of C *)
   let temp = state.c lsr 19 in
-  (* Get high 8 bits of C after shifting *)
+
   if temp > 0xFF then begin
-    (* Carry occurred - propagate carry through stacked 0xFF bytes *)
-    if state.bp >= 0 then begin
-      Bytes.set_uint8 state.output state.bp
-        (Bytes.get_uint8 state.output state.bp + 1)
-    end;
-    while state.st > 0 do
-      ensure_capacity state 1;
-      Bytes.set_uint8 state.output state.output_pos 0x00;
+    (* Carry occurred - handle overflow over all stacked 0xFF bytes *)
+    if state.buffer >= 0 then begin
+      (* Output any pending zero bytes first (zc handling from libjpeg) *)
+      (* Output stacked 0xFF bytes - they become 0x00 due to carry *)
+      while state.st > 0 do
+        Bytes.set_uint8 state.output state.output_pos 0x00;
+        state.output_pos <- state.output_pos + 1;
+        state.st <- state.st - 1
+      done;
+      (* Output buffer + 1 (the carry increments buffer) *)
+      let new_buffer = state.buffer + 1 in
+      Bytes.set_uint8 state.output state.output_pos new_buffer;
       state.output_pos <- state.output_pos + 1;
-      state.st <- state.st - 1
-    done;
+      (* If buffer+1 == 0xFF, add stuff byte *)
+      if new_buffer = 0xFF then begin
+        Bytes.set_uint8 state.output state.output_pos 0x00;
+        state.output_pos <- state.output_pos + 1
+      end
+    end;
+    (* The 3 spacer bits in C guarantee new buffer can't be 0xFF here *)
     state.buffer <- temp land 0xFF
   end
   else if temp = 0xFF then begin
-    (* Stack the 0xFF to handle potential carry later *)
+    (* Stack 0xFF byte (might overflow later) *)
     state.st <- state.st + 1
   end
   else begin
-    (* Normal byte - output any stacked 0xFF bytes with stuffing *)
+    (* Output all stacked 0xFF bytes - they won't overflow anymore *)
     if state.buffer >= 0 then begin
-      ensure_capacity state 1;
-      Bytes.set_uint8 state.output state.output_pos state.buffer;
-      state.bp <- state.output_pos;
-      state.output_pos <- state.output_pos + 1
+      (* Output buffer first *)
+      if state.buffer = 0 then begin
+        (* Skip leading zeros - this is the "zc" optimization from libjpeg *)
+        ()
+      end
+      else begin
+        Bytes.set_uint8 state.output state.output_pos state.buffer;
+        state.output_pos <- state.output_pos + 1
+      end
     end;
+    (* Output stacked 0xFF bytes with stuffing *)
     while state.st > 0 do
-      ensure_capacity state 2;
       Bytes.set_uint8 state.output state.output_pos 0xFF;
       state.output_pos <- state.output_pos + 1;
       Bytes.set_uint8 state.output state.output_pos 0x00;
-      (* Byte stuffing *)
       state.output_pos <- state.output_pos + 1;
       state.st <- state.st - 1
     done;
-    state.buffer <- temp
+    (* New output byte (can still overflow later) *)
+    state.buffer <- temp land 0xFF
   end;
-  state.c <- (state.c land 0x7FFFF) lsl 8;
-  (* Keep low 19 bits, shift left 8 *)
-  state.ct <- 8
+
+  (* Clear bits 19+ from C, keep bits 0-18 *)
+  state.c <- state.c land 0x7FFFF;
+  (* Increment CT by 8 (we've made room for 8 more bits) *)
+  state.ct <- state.ct + 8;
+
+  if !debug_byteout then
+    Printf.printf "byteout exit: c=0x%08x buffer=0x%x st=%d ct=%d output_pos=%d\n"
+      state.c state.buffer state.st state.ct state.output_pos
 
 (** Initialize the JPEG arithmetic encoder (INITENC from T.81 D.1.4) *)
 let init_jpeg_encoder () =
@@ -719,7 +728,7 @@ let init_jpeg_encoder () =
     bp = -1;
     (* No bytes output yet *)
     buffer = -1;
-    (* No buffered byte *)
+    (* Buffer empty initially (libjpeg convention: -1 means empty) *)
     output = Bytes.create initial_cap;
     output_pos = 0;
     output_cap = initial_cap;
@@ -729,84 +738,93 @@ let init_jpeg_encoder () =
 let renorme state =
   while state.a < 0x8000 do
     state.a <- state.a lsl 1;
-    state.c <- state.c lsl 1;
+    state.c <- (state.c lsl 1) land 0xFFFFFFFF;
     state.ct <- state.ct - 1;
     if state.ct = 0 then byteout state
   done
 
-(** Encode a single binary decision (ENCODE from T.81 D.1.6) *)
+(** Encode a single binary decision (ENCODE - exact libjpeg algorithm)
+
+    This matches jcarith.c arith_encode() exactly:
+    - For MPS: if A < Qe, do conditional exchange (C += A, A = Qe)
+    - For LPS: if A >= Qe, normal case (C += A, A = Qe), else keep A
+*)
 let encode_decision ctx state d =
   let qe = get_qe ctx.index in
 
   (* A = A - Qe *)
   state.a <- state.a - qe;
 
-  if d = ctx.mps then begin
-    (* MPS: C unchanged, A = A (already subtracted Qe, need to add back if no renorm) *)
-    if state.a < 0x8000 then begin
+  if d <> ctx.mps then begin
+    (* Encode LPS (less probable symbol) *)
+    if state.a >= qe then begin
+      (* Normal LPS: interval for LPS is larger, so we use it *)
+      state.c <- state.c + state.a;
+      state.a <- qe
+    end;
+    (* else: A < Qe means conditional exchange - we keep the current A
+       (which is the MPS interval) but use LPS state transition *)
+    if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
+    ctx.index <- get_nlps ctx.index
+  end
+  else begin
+    (* Encode MPS (more probable symbol) *)
+    if state.a >= 0x8000 then begin
+      (* A >= 0x8000: no renormalization needed, just return *)
+      ()
+    end
+    else begin
       if state.a < qe then begin
-        (* Conditional exchange - this is actually LPS *)
+        (* Conditional exchange: A < Qe means we use LPS interval for MPS *)
+        state.c <- state.c + state.a;
         state.a <- qe
       end;
       ctx.index <- get_nmps ctx.index
     end
-    else begin
-      (* No renormalization needed, restore A *)
-      state.a <- state.a + qe
-    end
-  end
-  else begin
-    (* LPS: C = C + A *)
-    state.c <- state.c + state.a;
-    if state.a >= qe then begin
-      (* Normal LPS *)
-      state.a <- qe
-    end;
-    (* Conditional exchange handled by state machine *)
-    if get_switch ctx.index <> 0 then ctx.mps <- 1 - ctx.mps;
-    ctx.index <- get_nlps ctx.index
   end;
 
   (* Renormalize if needed *)
   if state.a < 0x8000 then renorme state
 
-(** Flush the encoder (FLUSH from T.81 D.1.7) *)
+(** Flush the encoder (FLUSH from T.81 D.1.8) *)
 let flush_jpeg_encoder state =
-  (* Clear final bits *)
-  let temp = (state.c + state.a - 1) land 0xFFFF0000 in
-  let c =
-    if temp < state.c then state.c (* Would cause carry, use C *) else temp
-  in
-  state.c <- c;
-
-  (* Output remaining bytes *)
-  state.c <- state.c lsl state.ct;
-  byteout state;
-  state.c <- state.c lsl 8;
-  byteout state;
-
-  (* Output any remaining buffered byte *)
-  if state.buffer >= 0 then begin
-    ensure_capacity state 1;
-    Bytes.set_uint8 state.output state.output_pos state.buffer;
+  (* Helper to output a byte with stuffing *)
+  let output_flush_byte b =
+    ensure_capacity state 2;
+    Bytes.set_uint8 state.output state.output_pos b;
     state.output_pos <- state.output_pos + 1;
-    (* Add stuffing if it was 0xFF *)
-    if state.buffer = 0xFF then begin
-      ensure_capacity state 1;
+    if b = 0xFF then begin
       Bytes.set_uint8 state.output state.output_pos 0x00;
       state.output_pos <- state.output_pos + 1
     end
+  in
+
+  (* Shift C left by CT to position for final extraction *)
+  state.c <- (state.c lsl state.ct) land 0xFFFFFFFF;
+  state.ct <- 0;
+
+  (* Call byteout to extract a byte if needed *)
+  byteout state;
+
+  (* Output buffer if valid *)
+  if state.buffer >= 0 then begin
+    output_flush_byte state.buffer
   end;
 
-  (* Output any stacked 0xFF bytes *)
+  (* Output stacked 0xFF bytes with stuffing *)
   while state.st > 0 do
-    ensure_capacity state 2;
-    Bytes.set_uint8 state.output state.output_pos 0xFF;
-    state.output_pos <- state.output_pos + 1;
-    Bytes.set_uint8 state.output state.output_pos 0x00;
-    state.output_pos <- state.output_pos + 1;
+    output_flush_byte 0xFF;
     state.st <- state.st - 1
   done;
+
+  (* Output remaining bytes from C register *)
+  (* After byteout, C has been masked to 19 bits and remaining data is there *)
+  let byte1 = (state.c lsr 11) land 0xFF in
+  let byte2 = (state.c lsr 3) land 0xFF in
+
+  (* Always output at least 2 bytes for decoder initialization *)
+  output_flush_byte byte1;
+  output_flush_byte byte2;
 
   (* Return the output bytes *)
   Bytes.sub state.output 0 state.output_pos
@@ -827,11 +845,12 @@ let encode_dc_diff state bins diff _l =
     let sign_ctx = if sign = 0 then bins.dc_sp else bins.dc_sn in
 
     (* Encode magnitude using categories *)
-    (* First, determine category (number of bits needed) *)
+    (* Category = number of bits needed to represent magnitude *)
+    (* Cat 1: 1, Cat 2: 2-3, Cat 3: 4-7, ..., Cat n: 2^(n-1) to 2^n - 1 *)
     let rec find_category m cat =
-      if m <= 1 then cat else find_category (m lsr 1) (cat + 1)
+      if m = 0 then cat else find_category (m lsr 1) (cat + 1)
     in
-    let category = if mag <= 1 then 1 else find_category mag 0 in
+    let category = find_category mag 0 in
 
     (* Encode category using unary coding *)
     for i = 1 to category - 1 do
@@ -890,9 +909,9 @@ let encode_ac_block state bins coeffs kx =
 
         (* Encode magnitude category *)
         let rec find_category m cat =
-          if m <= 1 then cat else find_category (m lsr 1) (cat + 1)
+          if m = 0 then cat else find_category (m lsr 1) (cat + 1)
         in
-        let category = if mag <= 1 then 1 else find_category mag 0 in
+        let category = find_category mag 0 in
         let category = min category (max 15 kx) in
 
         (* Encode category using unary coding *)

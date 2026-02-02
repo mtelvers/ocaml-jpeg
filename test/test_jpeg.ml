@@ -1543,6 +1543,84 @@ let test_checkerboard_roundtrip () =
   (* Max error might be higher at edges due to ringing, but should be bounded *)
   Alcotest.(check bool) "Max error < 50" true (!max_error < 50)
 
+(** Test checkerboard pattern with arithmetic encoding *)
+let test_checkerboard_arithmetic () =
+  let width = 64 in
+  let height = 64 in
+  let square_size = 8 in
+
+  (* Create a black and white checkerboard *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      let checker_x = x / square_size in
+      let checker_y = y / square_size in
+      let is_white = (checker_x + checker_y) mod 2 = 0 in
+      let color = if is_white then 255 else 0 in
+      Bigarray.Array1.set pixels idx color;
+      Bigarray.Array1.set pixels (idx + 1) color;
+      Bigarray.Array1.set pixels (idx + 2) color
+    done
+  done;
+  let original = Jpeg.create_image width height pixels in
+
+  (* Encode to JPEG with arithmetic coding *)
+  let options =
+    {
+      Jpeg.default_encode_options with
+      quality = 95;
+      entropy_coding = Jpeg.Arithmetic;
+    }
+  in
+  let jpeg_data = Jpeg.write_bytes_with_options options original in
+
+  (* Verify it's using arithmetic coding (SOF9) *)
+  let markers = Markers.parse_markers jpeg_data in
+  let has_sof9 =
+    List.exists
+      (fun m -> match m with Markers.SOF9 _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Uses arithmetic coding (SOF9)" true has_sof9;
+
+  (* Decode back *)
+  let decoded = Jpeg.read_bytes jpeg_data in
+
+  (* Verify dimensions match *)
+  Alcotest.(check int) "Width matches" width decoded.Jpeg.width;
+  Alcotest.(check int) "Height matches" height decoded.Jpeg.height;
+
+  (* Compare pixels *)
+  let total_error = ref 0 in
+  let max_error = ref 0 in
+  let num_pixels = width * height in
+
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let r1, g1, b1 = Jpeg.get_pixel original x y in
+      let r2, g2, b2 = Jpeg.get_pixel decoded x y in
+      let err_r = abs (r1 - r2) in
+      let err_g = abs (g1 - g2) in
+      let err_b = abs (b1 - b2) in
+      let pixel_err = max err_r (max err_g err_b) in
+      total_error := !total_error + err_r + err_g + err_b;
+      if pixel_err > !max_error then max_error := pixel_err
+    done
+  done;
+
+  let avg_error = float_of_int !total_error /. float_of_int (num_pixels * 3) in
+
+  Printf.printf
+    "Checkerboard (arithmetic) test: avg_error=%.2f, max_error=%d\n%!" avg_error
+    !max_error;
+
+  Alcotest.(check bool) "Average error < 10" true (avg_error < 10.0);
+  Alcotest.(check bool) "Max error < 50" true (!max_error < 50)
+
 (** All tests *)
 let () =
   Alcotest.run "JPEG Library"
@@ -1653,5 +1731,6 @@ let () =
             test_jpeg_arith_encoder_reset;
           Alcotest.test_case "block-encode" `Quick test_jpeg_arith_block_encode;
           Alcotest.test_case "file-size-comparison" `Quick test_arith_file_size;
+          Alcotest.test_case "checkerboard" `Quick test_checkerboard_arithmetic;
         ] );
     ]
