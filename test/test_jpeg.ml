@@ -473,6 +473,8 @@ let test_options_combinations () =
                   restart_interval = 0;
                   precision = Jpeg.Precision_8;
                   entropy_coding = Jpeg.Huffman;
+                  predictor = 1;
+                  point_transform = 0;
                 }
               in
               let data = Jpeg.write_bytes_with_options options image in
@@ -541,6 +543,8 @@ let test_progressive_grayscale () =
       restart_interval = 0;
       precision = Jpeg.Precision_8;
       entropy_coding = Jpeg.Huffman;
+      predictor = 1;
+      point_transform = 0;
     }
   in
   let data = Jpeg.write_bytes_with_options options image in

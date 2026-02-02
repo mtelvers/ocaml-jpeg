@@ -10,6 +10,7 @@ module Color = Color
 module Exif = Exif
 module Arithmetic = Arithmetic
 module Icc = Icc
+module Predictor = Predictor
 
 (** Pixel format for image data *)
 type pixel_format =
@@ -41,7 +42,7 @@ type color_mode =
   | YCCK  (** CMYK via YCbCr + K, 4 components *)
 
 (** Encoding modes *)
-type encoding_mode = Baseline | Progressive
+type encoding_mode = Baseline | Progressive | Lossless
 
 (** Bit precision for sample values *)
 type precision = Precision_8 | Precision_12
@@ -57,6 +58,8 @@ type encode_options = {
   restart_interval : int;  (** MCUs between RST markers, 0 = disabled *)
   precision : precision;  (** Sample precision: 8-bit or 12-bit *)
   entropy_coding : entropy_coding;  (** Huffman or arithmetic coding *)
+  predictor : int;  (** Predictor selection for lossless mode (1-7), 0 = auto *)
+  point_transform : int;  (** Point transform for lossless mode (0 = none) *)
 }
 (** Encoding options *)
 
@@ -69,6 +72,8 @@ let default_encode_options =
     restart_interval = 0;
     precision = Precision_8;
     entropy_coding = Huffman;
+    predictor = 1;
+    point_transform = 0;
   }
 
 type decode_state = {
@@ -380,8 +385,10 @@ let process_markers markers =
       match segment with
       | Markers.SOF0 frame -> state.frame <- Some frame
       | Markers.SOF2 frame -> state.frame <- Some frame
+      | Markers.SOF3 frame -> state.frame <- Some frame
       | Markers.SOF9 frame -> state.frame <- Some frame
       | Markers.SOF10 frame -> state.frame <- Some frame
+      | Markers.SOF11 frame -> state.frame <- Some frame
       | Markers.DQT tables ->
           List.iter
             (fun (qt : Markers.quant_table) ->
@@ -1047,6 +1054,330 @@ let decode_arith_progressive markers frame state =
 
   reconstruct_image frame component_blocks
 
+(* ============================================================================
+   Lossless JPEG Decoder (for SOF3 and SOF11)
+   ============================================================================ *)
+
+(** Decode a single difference value using Huffman coding for lossless JPEG.
+    In lossless mode, the DC table is used for all samples (there are no AC coefficients). *)
+let decode_lossless_diff_huffman reader dc_table =
+  let category = Huffman.decode_symbol reader dc_table in
+  if category = 0 then 0
+  else if category = 16 then
+    (* Category 16 represents 32768, which is -32768 in two's complement *)
+    -32768
+  else
+    let bits = Bitstream.read_bits reader category in
+    Huffman.extend bits category
+
+(** Decode lossless JPEG scan using Huffman coding.
+    Returns pixel planes for each component. *)
+let decode_lossless_huffman_scan reader frame scan state =
+  let width = frame.Markers.width in
+  let height = frame.Markers.height in
+  let precision = frame.Markers.precision in
+  let num_components = Array.length scan.Markers.scan_components in
+
+  (* Get predictor selection and point transform from scan header *)
+  let predictor_sel = scan.Markers.ss in
+  let point_transform = scan.Markers.al in
+  let predictor = Predictor.predictor_of_int predictor_sel in
+
+  (* For lossless JPEG, there's no subsampling - each component has same dimensions *)
+  (* Allocate pixel storage for each component *)
+  let component_planes =
+    Array.init num_components (fun _ ->
+        Array.make (width * height) 0)
+  in
+
+  (* Previous row buffer for prediction *)
+  let prev_rows =
+    Array.init num_components (fun _ ->
+        Array.make width 0)
+  in
+
+  let mcu_count = ref 0 in
+
+  (* Decode row by row, pixel by pixel *)
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      (* Check for restart marker at row boundaries or after restart interval *)
+      if state.restart_interval > 0 && !mcu_count > 0
+         && !mcu_count mod state.restart_interval = 0 then begin
+        Bitstream.align_reader reader;
+        (* Reset prediction context - fill prev_rows with default value *)
+        let default_val = 1 lsl (precision - point_transform - 1) in
+        Array.iter (fun row -> Array.fill row 0 width default_val) prev_rows
+      end;
+
+      (* Decode each component *)
+      for ci = 0 to num_components - 1 do
+        let scan_comp = scan.Markers.scan_components.(ci) in
+        let dc_table = state.dc_tables.(scan_comp.Markers.dc_table) in
+        let plane = component_planes.(ci) in
+        let prev_row = prev_rows.(ci) in
+
+        (* Get neighbor values for prediction *)
+        let ra = if x > 0 then plane.((y * width) + x - 1) else 0 in
+        let rb = if y > 0 then prev_row.(x) else 0 in
+        let rc = if x > 0 && y > 0 then
+          if x = 1 then prev_row.(0) else prev_row.(x - 1)
+        else 0 in
+
+        (* Calculate prediction *)
+        let predicted = Predictor.predict predictor
+            ~ra ~rb ~rc ~x ~y ~precision ~point_transform in
+
+        (* Decode difference *)
+        let diff = decode_lossless_diff_huffman reader dc_table in
+
+        (* Reconstruct sample value *)
+        let sample = Predictor.reconstruct ~predicted ~diff ~precision ~point_transform in
+
+        (* Store the sample *)
+        plane.((y * width) + x) <- sample
+      done;
+
+      incr mcu_count
+    done;
+
+    (* Copy current row to prev_row for next iteration *)
+    for ci = 0 to num_components - 1 do
+      let plane = component_planes.(ci) in
+      let prev_row = prev_rows.(ci) in
+      for xx = 0 to width - 1 do
+        prev_row.(xx) <- plane.((y * width) + xx)
+      done
+    done
+  done;
+
+  component_planes
+
+(** Decode a single difference value using arithmetic coding for lossless JPEG *)
+let decode_lossless_diff_arithmetic (arith_state : Arithmetic.arith_scan_state) component_idx =
+  let dc_bins = arith_state.Arithmetic.dc_bins.(component_idx) in
+  let prev_dc = arith_state.Arithmetic.prev_dc.(component_idx) in
+  let l = arith_state.Arithmetic.l.(component_idx) in
+  let diff = Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins prev_dc l in
+  (* Update prev_dc for context *)
+  arith_state.Arithmetic.prev_dc.(component_idx) <- prev_dc + diff;
+  diff
+
+(** Decode lossless JPEG scan using arithmetic coding *)
+let decode_lossless_arithmetic_scan entropy_data frame scan state =
+  let width = frame.Markers.width in
+  let height = frame.Markers.height in
+  let precision = frame.Markers.precision in
+  let num_components = Array.length scan.Markers.scan_components in
+
+  (* Get predictor selection and point transform from scan header *)
+  let predictor_sel = scan.Markers.ss in
+  let point_transform = scan.Markers.al in
+  let predictor = Predictor.predictor_of_int predictor_sel in
+
+  (* Initialize arithmetic decoder *)
+  let arith_state =
+    Arithmetic.init_arith_scan_decoder entropy_data num_components
+  in
+
+  (* Set conditioning values from DAC markers *)
+  for ci = 0 to num_components - 1 do
+    let scan_comp = scan.Markers.scan_components.(ci) in
+    Arithmetic.set_conditioning arith_state ci true
+      state.arith_dc_conditioning.(scan_comp.Markers.dc_table)
+  done;
+
+  (* Allocate pixel storage for each component *)
+  let component_planes =
+    Array.init num_components (fun _ ->
+        Array.make (width * height) 0)
+  in
+
+  (* Previous row buffer for prediction *)
+  let prev_rows =
+    Array.init num_components (fun _ ->
+        Array.make width 0)
+  in
+
+  let mcu_count = ref 0 in
+
+  (* Decode row by row, pixel by pixel *)
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      (* Check for restart marker *)
+      if state.restart_interval > 0 && !mcu_count > 0
+         && !mcu_count mod state.restart_interval = 0 then begin
+        Arithmetic.reset_arith_decoder arith_state;
+        let default_val = 1 lsl (precision - point_transform - 1) in
+        Array.iter (fun row -> Array.fill row 0 width default_val) prev_rows
+      end;
+
+      (* Decode each component *)
+      for ci = 0 to num_components - 1 do
+        let plane = component_planes.(ci) in
+        let prev_row = prev_rows.(ci) in
+
+        (* Get neighbor values for prediction *)
+        let ra = if x > 0 then plane.((y * width) + x - 1) else 0 in
+        let rb = if y > 0 then prev_row.(x) else 0 in
+        let rc = if x > 0 && y > 0 then
+          if x = 1 then prev_row.(0) else prev_row.(x - 1)
+        else 0 in
+
+        (* Calculate prediction *)
+        let predicted = Predictor.predict predictor
+            ~ra ~rb ~rc ~x ~y ~precision ~point_transform in
+
+        (* Decode difference *)
+        let diff = decode_lossless_diff_arithmetic arith_state ci in
+
+        (* Reconstruct sample value *)
+        let sample = Predictor.reconstruct ~predicted ~diff ~precision ~point_transform in
+
+        (* Store the sample *)
+        plane.((y * width) + x) <- sample
+      done;
+
+      incr mcu_count
+    done;
+
+    (* Copy current row to prev_row for next iteration *)
+    for ci = 0 to num_components - 1 do
+      let plane = component_planes.(ci) in
+      let prev_row = prev_rows.(ci) in
+      for xx = 0 to width - 1 do
+        prev_row.(xx) <- plane.((y * width) + xx)
+      done
+    done
+  done;
+
+  component_planes
+
+(** Reconstruct image from lossless decoded planes *)
+let reconstruct_lossless_image frame component_planes =
+  let width = frame.Markers.width in
+  let height = frame.Markers.height in
+  let num_components = Array.length frame.Markers.components in
+  let precision = frame.Markers.precision in
+
+  (* Scale values if precision > 8 bits *)
+  let scale_value v =
+    if precision <= 8 then v
+    else v lsr (precision - 8)  (* Scale down to 8 bits *)
+  in
+
+  if num_components = 1 then begin
+    (* Grayscale *)
+    let y_plane = component_planes.(0) in
+    let pixels =
+      Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+        (width * height * 3)
+    in
+    for y = 0 to height - 1 do
+      for x = 0 to width - 1 do
+        let v = scale_value y_plane.((y * width) + x) in
+        let v = max 0 (min 255 v) in
+        let idx = ((y * width) + x) * 3 in
+        Bigarray.Array1.set pixels idx v;
+        Bigarray.Array1.set pixels (idx + 1) v;
+        Bigarray.Array1.set pixels (idx + 2) v
+      done
+    done;
+    (pixels, RGB24)
+  end
+  else if num_components = 3 then begin
+    (* RGB - lossless JPEG typically stores RGB directly, not YCbCr *)
+    let r_plane = component_planes.(0) in
+    let g_plane = component_planes.(1) in
+    let b_plane = component_planes.(2) in
+    let pixels =
+      Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+        (width * height * 3)
+    in
+    for y = 0 to height - 1 do
+      for x = 0 to width - 1 do
+        let pos = (y * width) + x in
+        let r = max 0 (min 255 (scale_value r_plane.(pos))) in
+        let g = max 0 (min 255 (scale_value g_plane.(pos))) in
+        let b = max 0 (min 255 (scale_value b_plane.(pos))) in
+        let idx = pos * 3 in
+        Bigarray.Array1.set pixels idx r;
+        Bigarray.Array1.set pixels (idx + 1) g;
+        Bigarray.Array1.set pixels (idx + 2) b
+      done
+    done;
+    (pixels, RGB24)
+  end
+  else if num_components = 4 then begin
+    (* CMYK *)
+    let c_plane = component_planes.(0) in
+    let m_plane = component_planes.(1) in
+    let y_plane = component_planes.(2) in
+    let k_plane = component_planes.(3) in
+    let pixels =
+      Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+        (width * height * 4)
+    in
+    for y = 0 to height - 1 do
+      for x = 0 to width - 1 do
+        let pos = (y * width) + x in
+        let c = max 0 (min 255 (scale_value c_plane.(pos))) in
+        let m = max 0 (min 255 (scale_value m_plane.(pos))) in
+        let yy = max 0 (min 255 (scale_value y_plane.(pos))) in
+        let k = max 0 (min 255 (scale_value k_plane.(pos))) in
+        let idx = pos * 4 in
+        Bigarray.Array1.set pixels idx c;
+        Bigarray.Array1.set pixels (idx + 1) m;
+        Bigarray.Array1.set pixels (idx + 2) yy;
+        Bigarray.Array1.set pixels (idx + 3) k
+      done
+    done;
+    (pixels, CMYK32)
+  end
+  else
+    failwith (Printf.sprintf "Unsupported number of components: %d" num_components)
+
+(** Decode lossless JPEG with Huffman coding (SOF3) *)
+let decode_lossless_huffman markers frame state =
+  (* Find and decode scan data *)
+  let scan_data =
+    List.find_map
+      (fun m ->
+        match m with
+        | Markers.SOS (header, data) -> Some (header, data)
+        | _ -> None)
+      markers
+  in
+
+  match scan_data with
+  | None -> failwith "No scan data found"
+  | Some (scan_header, entropy_data) ->
+      let reader = Bitstream.create_reader entropy_data in
+      let component_planes =
+        decode_lossless_huffman_scan reader frame scan_header state
+      in
+      reconstruct_lossless_image frame component_planes
+
+(** Decode lossless JPEG with arithmetic coding (SOF11) *)
+let decode_lossless_arithmetic markers frame state =
+  (* Find and decode scan data *)
+  let scan_data =
+    List.find_map
+      (fun m ->
+        match m with
+        | Markers.SOS (header, data) -> Some (header, data)
+        | _ -> None)
+      markers
+  in
+
+  match scan_data with
+  | None -> failwith "No scan data found"
+  | Some (scan_header, entropy_data) ->
+      let component_planes =
+        decode_lossless_arithmetic_scan entropy_data frame scan_header state
+      in
+      reconstruct_lossless_image frame component_planes
+
 (** Decode baseline JPEG (single scan) *)
 let decode_baseline markers frame state =
   (* Find and decode scan data *)
@@ -1121,6 +1452,10 @@ let read_bytes data =
             decode_arith_baseline markers frame state
         | Markers.ArithmeticProgressive ->
             decode_arith_progressive markers frame state
+        | Markers.LosslessHuffman ->
+            decode_lossless_huffman markers frame state
+        | Markers.LosslessArithmetic ->
+            decode_lossless_arithmetic markers frame state
       in
 
       (* Reconstruct ICC profile from chunks if present *)
@@ -2265,6 +2600,448 @@ let write_bytes_with_options options image =
         prog_arith_initial_markers @ scan_markers @ [ Markers.EOI ]
       in
       Markers.write_markers all_markers
+  | Lossless, Huffman ->
+      (* Lossless Huffman encoding (SOF3) *)
+      let predictor_sel = if options.predictor = 0 then 1 else options.predictor in
+      let point_transform = options.point_transform in
+      let predictor = Predictor.predictor_of_int predictor_sel in
+
+      (* For lossless mode, no subsampling - use 1:1 for all components *)
+      let lossless_components =
+        if is_grayscale then
+          [| { Markers.component_id = 1; h_sampling = 1; v_sampling = 1; quant_table_id = 0 } |]
+        else if is_4_component then
+          [|
+            { Markers.component_id = 1; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 2; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 3; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 4; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+          |]
+        else
+          [|
+            { Markers.component_id = 1; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 2; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 3; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+          |]
+      in
+
+      (* Build scan components - use DC table only (no AC in lossless) *)
+      let lossless_scan_components =
+        Array.mapi (fun i comp ->
+            let table_id = if i = 0 then 0 else 1 in
+            { Markers.selector = comp.Markers.component_id; dc_table = table_id; ac_table = 0 })
+          lossless_components
+      in
+
+      (* Get raw pixel planes - for lossless, store RGB directly, not YCbCr *)
+      let lossless_planes =
+        if is_grayscale then begin
+          let plane = Array.make (width * height) 0 in
+          (match image.pixel_format with
+          | RGB24 ->
+              for i = 0 to (width * height) - 1 do
+                let r = Bigarray.Array1.get image.pixels (i * 3) in
+                let g = Bigarray.Array1.get image.pixels ((i * 3) + 1) in
+                let b = Bigarray.Array1.get image.pixels ((i * 3) + 2) in
+                (* Use standard grayscale conversion *)
+                plane.(i) <- (r * 77 + g * 150 + b * 29) / 256
+              done
+          | CMYK32 ->
+              for i = 0 to (width * height) - 1 do
+                let c = Bigarray.Array1.get image.pixels (i * 4) in
+                let m = Bigarray.Array1.get image.pixels ((i * 4) + 1) in
+                let y = Bigarray.Array1.get image.pixels ((i * 4) + 2) in
+                let k = Bigarray.Array1.get image.pixels ((i * 4) + 3) in
+                let r, g, b = Color.cmyk_to_rgb c m y k in
+                plane.(i) <- (r * 77 + g * 150 + b * 29) / 256
+              done);
+          [| plane |]
+        end
+        else if is_4_component then begin
+          let planes = Array.init 4 (fun _ -> Array.make (width * height) 0) in
+          (match image.pixel_format with
+          | CMYK32 ->
+              for i = 0 to (width * height) - 1 do
+                planes.(0).(i) <- Bigarray.Array1.get image.pixels (i * 4);
+                planes.(1).(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 1);
+                planes.(2).(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 2);
+                planes.(3).(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 3)
+              done
+          | RGB24 ->
+              for i = 0 to (width * height) - 1 do
+                let r = Bigarray.Array1.get image.pixels (i * 3) in
+                let g = Bigarray.Array1.get image.pixels ((i * 3) + 1) in
+                let b = Bigarray.Array1.get image.pixels ((i * 3) + 2) in
+                let c, m, y, k = Color.rgb_to_cmyk r g b in
+                planes.(0).(i) <- c;
+                planes.(1).(i) <- m;
+                planes.(2).(i) <- y;
+                planes.(3).(i) <- k
+              done);
+          planes
+        end
+        else begin
+          (* RGB - store as RGB directly for lossless *)
+          let planes = Array.init 3 (fun _ -> Array.make (width * height) 0) in
+          (match image.pixel_format with
+          | RGB24 ->
+              for i = 0 to (width * height) - 1 do
+                planes.(0).(i) <- Bigarray.Array1.get image.pixels (i * 3);
+                planes.(1).(i) <- Bigarray.Array1.get image.pixels ((i * 3) + 1);
+                planes.(2).(i) <- Bigarray.Array1.get image.pixels ((i * 3) + 2)
+              done
+          | CMYK32 ->
+              for i = 0 to (width * height) - 1 do
+                let c = Bigarray.Array1.get image.pixels (i * 4) in
+                let m = Bigarray.Array1.get image.pixels ((i * 4) + 1) in
+                let y = Bigarray.Array1.get image.pixels ((i * 4) + 2) in
+                let k = Bigarray.Array1.get image.pixels ((i * 4) + 3) in
+                let r, g, b = Color.cmyk_to_rgb c m y k in
+                planes.(0).(i) <- r;
+                planes.(1).(i) <- g;
+                planes.(2).(i) <- b
+              done);
+          planes
+        end
+      in
+
+      (* Encode scan data *)
+      let writer = Bitstream.create_writer () in
+      let num_lossless_components = Array.length lossless_planes in
+
+      (* Previous row buffer for prediction *)
+      let prev_rows = Array.init num_lossless_components (fun _ -> Array.make width 0) in
+      let dc_lum_enc = Huffman.std_dc_luminance_table () in
+      let dc_chr_enc = Huffman.std_dc_chrominance_table () in
+
+      let mcu_count = ref 0 in
+      let restart_interval = options.restart_interval in
+      let rst_counter = ref 0 in
+
+      for y = 0 to height - 1 do
+        for x = 0 to width - 1 do
+          (* Check for restart marker *)
+          if restart_interval > 0 && !mcu_count > 0
+             && !mcu_count mod restart_interval = 0 then begin
+            Bitstream.write_rst_marker writer !rst_counter;
+            rst_counter := (!rst_counter + 1) land 0x07;
+            (* Reset prediction context *)
+            let default_val = 1 lsl (precision_value - point_transform - 1) in
+            Array.iter (fun row -> Array.fill row 0 width default_val) prev_rows
+          end;
+
+          (* Encode each component *)
+          for ci = 0 to num_lossless_components - 1 do
+            let plane = lossless_planes.(ci) in
+            let prev_row = prev_rows.(ci) in
+            let dc_table = if ci = 0 then dc_lum_enc else dc_chr_enc in
+
+            (* Get the sample value *)
+            let sample = plane.((y * width) + x) in
+
+            (* Get neighbor values for prediction *)
+            let ra = if x > 0 then plane.((y * width) + x - 1) else 0 in
+            let rb = if y > 0 then prev_row.(x) else 0 in
+            let rc = if x > 0 && y > 0 then
+              if x = 1 then prev_row.(0) else prev_row.(x - 1)
+            else 0 in
+
+            (* Calculate prediction *)
+            let predicted = Predictor.predict predictor
+                ~ra ~rb ~rc ~x ~y ~precision:precision_value ~point_transform in
+
+            (* Compute difference *)
+            let diff = Predictor.compute_diff ~sample ~predicted
+                ~precision:precision_value ~point_transform in
+
+            (* Encode difference using DC Huffman table *)
+            let category = Huffman.category diff in
+            Huffman.encode_symbol writer dc_table category;
+            if category > 0 then
+              Bitstream.write_bits writer (Huffman.encode_value diff category) category
+          done;
+
+          incr mcu_count
+        done;
+
+        (* Copy current row to prev_row for next iteration *)
+        for ci = 0 to num_lossless_components - 1 do
+          let plane = lossless_planes.(ci) in
+          let prev_row = prev_rows.(ci) in
+          for xx = 0 to width - 1 do
+            prev_row.(xx) <- plane.((y * width) + xx)
+          done
+        done
+      done;
+
+      Bitstream.flush_writer writer;
+      let scan_data = Bitstream.get_bytes writer in
+
+      (* Build markers - no quantization tables needed for lossless *)
+      let lossless_initial_markers =
+        [
+          Markers.SOI;
+          Markers.APP0
+            {
+              version_major = 1;
+              version_minor = 1;
+              density_units = 0;
+              x_density = 1;
+              y_density = 1;
+              thumbnail_width = 0;
+              thumbnail_height = 0;
+            };
+        ]
+        @ (match image.exif with
+          | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
+          | None -> [])
+        @ (match image.icc_profile with
+          | Some icc ->
+              List.map
+                (fun (seq, count, data) ->
+                  Markers.APP2_ICC { sequence = seq; count; data })
+                (Icc.to_chunks icc)
+          | None -> [])
+      in
+
+      let markers =
+        lossless_initial_markers
+        @ [
+            Markers.SOF3
+              {
+                frame_type = Markers.LosslessHuffman;
+                precision = precision_value;
+                height;
+                width;
+                components = lossless_components;
+              };
+          ]
+        @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
+        @ [ Markers.DHT dht_markers ]
+        @ [
+            Markers.SOS
+              ({ scan_components = lossless_scan_components;
+                 ss = predictor_sel;  (* Predictor selection in ss field *)
+                 se = 0;              (* se = 0 for lossless *)
+                 ah = 0;              (* ah = 0 for lossless *)
+                 al = point_transform (* Point transform in al field *)
+               }, scan_data);
+            Markers.EOI;
+          ]
+      in
+      Markers.write_markers markers
+  | Lossless, Arithmetic ->
+      (* Lossless Arithmetic encoding (SOF11) - not yet fully implemented *)
+      (* The arithmetic coding for lossless JPEG requires a different statistical
+         model than DCT JPEG. This is a placeholder implementation. *)
+      let predictor_sel = if options.predictor = 0 then 1 else options.predictor in
+      let point_transform = options.point_transform in
+      let predictor = Predictor.predictor_of_int predictor_sel in
+
+      (* For lossless mode, no subsampling - use 1:1 for all components *)
+      let lossless_components =
+        if is_grayscale then
+          [| { Markers.component_id = 1; h_sampling = 1; v_sampling = 1; quant_table_id = 0 } |]
+        else if is_4_component then
+          [|
+            { Markers.component_id = 1; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 2; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 3; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 4; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+          |]
+        else
+          [|
+            { Markers.component_id = 1; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 2; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+            { Markers.component_id = 3; h_sampling = 1; v_sampling = 1; quant_table_id = 0 };
+          |]
+      in
+
+      let lossless_scan_components =
+        Array.mapi (fun i comp ->
+            let table_id = if i = 0 then 0 else 1 in
+            { Markers.selector = comp.Markers.component_id; dc_table = table_id; ac_table = 0 })
+          lossless_components
+      in
+
+      (* Get raw pixel planes *)
+      let lossless_planes =
+        if is_grayscale then begin
+          let plane = Array.make (width * height) 0 in
+          (match image.pixel_format with
+          | RGB24 ->
+              for i = 0 to (width * height) - 1 do
+                let r = Bigarray.Array1.get image.pixels (i * 3) in
+                let g = Bigarray.Array1.get image.pixels ((i * 3) + 1) in
+                let b = Bigarray.Array1.get image.pixels ((i * 3) + 2) in
+                plane.(i) <- (r * 77 + g * 150 + b * 29) / 256
+              done
+          | CMYK32 ->
+              for i = 0 to (width * height) - 1 do
+                let c = Bigarray.Array1.get image.pixels (i * 4) in
+                let m = Bigarray.Array1.get image.pixels ((i * 4) + 1) in
+                let y = Bigarray.Array1.get image.pixels ((i * 4) + 2) in
+                let k = Bigarray.Array1.get image.pixels ((i * 4) + 3) in
+                let r, g, b = Color.cmyk_to_rgb c m y k in
+                plane.(i) <- (r * 77 + g * 150 + b * 29) / 256
+              done);
+          [| plane |]
+        end
+        else if is_4_component then begin
+          let planes = Array.init 4 (fun _ -> Array.make (width * height) 0) in
+          (match image.pixel_format with
+          | CMYK32 ->
+              for i = 0 to (width * height) - 1 do
+                planes.(0).(i) <- Bigarray.Array1.get image.pixels (i * 4);
+                planes.(1).(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 1);
+                planes.(2).(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 2);
+                planes.(3).(i) <- Bigarray.Array1.get image.pixels ((i * 4) + 3)
+              done
+          | RGB24 ->
+              for i = 0 to (width * height) - 1 do
+                let r = Bigarray.Array1.get image.pixels (i * 3) in
+                let g = Bigarray.Array1.get image.pixels ((i * 3) + 1) in
+                let b = Bigarray.Array1.get image.pixels ((i * 3) + 2) in
+                let c, m, y, k = Color.rgb_to_cmyk r g b in
+                planes.(0).(i) <- c;
+                planes.(1).(i) <- m;
+                planes.(2).(i) <- y;
+                planes.(3).(i) <- k
+              done);
+          planes
+        end
+        else begin
+          let planes = Array.init 3 (fun _ -> Array.make (width * height) 0) in
+          (match image.pixel_format with
+          | RGB24 ->
+              for i = 0 to (width * height) - 1 do
+                planes.(0).(i) <- Bigarray.Array1.get image.pixels (i * 3);
+                planes.(1).(i) <- Bigarray.Array1.get image.pixels ((i * 3) + 1);
+                planes.(2).(i) <- Bigarray.Array1.get image.pixels ((i * 3) + 2)
+              done
+          | CMYK32 ->
+              for i = 0 to (width * height) - 1 do
+                let c = Bigarray.Array1.get image.pixels (i * 4) in
+                let m = Bigarray.Array1.get image.pixels ((i * 4) + 1) in
+                let y = Bigarray.Array1.get image.pixels ((i * 4) + 2) in
+                let k = Bigarray.Array1.get image.pixels ((i * 4) + 3) in
+                let r, g, b = Color.cmyk_to_rgb c m y k in
+                planes.(0).(i) <- r;
+                planes.(1).(i) <- g;
+                planes.(2).(i) <- b
+              done);
+          planes
+        end
+      in
+
+      (* Encode using arithmetic coding *)
+      let num_lossless_components = Array.length lossless_planes in
+      let arith_state = Arithmetic.init_arith_scan_encoder num_lossless_components in
+
+      let prev_rows = Array.init num_lossless_components (fun _ -> Array.make width 0) in
+      let mcu_count = ref 0 in
+      let restart_interval = options.restart_interval in
+
+      for y = 0 to height - 1 do
+        for x = 0 to width - 1 do
+          if restart_interval > 0 && !mcu_count > 0
+             && !mcu_count mod restart_interval = 0 then begin
+            ignore (Arithmetic.finish_arith_encoder arith_state);
+            Arithmetic.reset_arith_encoder arith_state;
+            let default_val = 1 lsl (precision_value - point_transform - 1) in
+            Array.iter (fun row -> Array.fill row 0 width default_val) prev_rows
+          end;
+
+          for ci = 0 to num_lossless_components - 1 do
+            let plane = lossless_planes.(ci) in
+            let prev_row = prev_rows.(ci) in
+
+            let sample = plane.((y * width) + x) in
+
+            let ra = if x > 0 then plane.((y * width) + x - 1) else 0 in
+            let rb = if y > 0 then prev_row.(x) else 0 in
+            let rc = if x > 0 && y > 0 then
+              if x = 1 then prev_row.(0) else prev_row.(x - 1)
+            else 0 in
+
+            let predicted = Predictor.predict predictor
+                ~ra ~rb ~rc ~x ~y ~precision:precision_value ~point_transform in
+
+            let diff = Predictor.compute_diff ~sample ~predicted
+                ~precision:precision_value ~point_transform in
+
+            (* Encode as DC-only block for arithmetic coding *)
+            let dc_only_block = Array.make 64 0 in
+            dc_only_block.(0) <- diff;
+            Arithmetic.encode_arith_block arith_state ci dc_only_block
+          done;
+
+          incr mcu_count
+        done;
+
+        for ci = 0 to num_lossless_components - 1 do
+          let plane = lossless_planes.(ci) in
+          let prev_row = prev_rows.(ci) in
+          for xx = 0 to width - 1 do
+            prev_row.(xx) <- plane.((y * width) + xx)
+          done
+        done
+      done;
+
+      let scan_data = Arithmetic.finish_arith_encoder arith_state in
+
+      let lossless_initial_markers =
+        [
+          Markers.SOI;
+          Markers.APP0
+            {
+              version_major = 1;
+              version_minor = 1;
+              density_units = 0;
+              x_density = 1;
+              y_density = 1;
+              thumbnail_width = 0;
+              thumbnail_height = 0;
+            };
+        ]
+        @ (match image.exif with
+          | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
+          | None -> [])
+        @ (match image.icc_profile with
+          | Some icc ->
+              List.map
+                (fun (seq, count, data) ->
+                  Markers.APP2_ICC { sequence = seq; count; data })
+                (Icc.to_chunks icc)
+          | None -> [])
+      in
+
+      let markers =
+        lossless_initial_markers
+        @ [
+            Markers.SOF11
+              {
+                frame_type = Markers.LosslessArithmetic;
+                precision = precision_value;
+                height;
+                width;
+                components = lossless_components;
+              };
+          ]
+        @ (if restart_interval > 0 then [ Markers.DRI restart_interval ] else [])
+        @ [ Markers.DAC dac_markers ]
+        @ [
+            Markers.SOS
+              ({ scan_components = lossless_scan_components;
+                 ss = predictor_sel;
+                 se = 0;
+                 ah = 0;
+                 al = point_transform
+               }, scan_data);
+            Markers.EOI;
+          ]
+      in
+      Markers.write_markers markers
 
 (** Encode JPEG with options to file *)
 let write_with_options options filename image =

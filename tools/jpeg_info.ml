@@ -69,6 +69,22 @@ let show_info filename =
               frame.Jpeg.Markers.precision;
             Printf.printf "    Components: %d\n"
               (Array.length frame.Jpeg.Markers.components)
+        | Jpeg.Markers.SOF3 frame ->
+            Printf.printf "  [SOF3] Lossless Huffman\n";
+            Printf.printf "    Dimensions: %dx%d\n" frame.Jpeg.Markers.width
+              frame.Jpeg.Markers.height;
+            Printf.printf "    Precision: %d bits\n"
+              frame.Jpeg.Markers.precision;
+            Printf.printf "    Components: %d\n"
+              (Array.length frame.Jpeg.Markers.components)
+        | Jpeg.Markers.SOF11 frame ->
+            Printf.printf "  [SOF11] Lossless Arithmetic\n";
+            Printf.printf "    Dimensions: %dx%d\n" frame.Jpeg.Markers.width
+              frame.Jpeg.Markers.height;
+            Printf.printf "    Precision: %d bits\n"
+              frame.Jpeg.Markers.precision;
+            Printf.printf "    Components: %d\n"
+              (Array.length frame.Jpeg.Markers.components)
         | Jpeg.Markers.DHT tables ->
             Printf.printf "  [DHT] Huffman Tables: %d\n" (List.length tables);
             List.iter

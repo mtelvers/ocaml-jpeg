@@ -3,6 +3,7 @@
     Supported features:
     - Baseline sequential DCT JPEG (SOF0)
     - Progressive DCT JPEG (SOF2)
+    - Lossless JPEG (SOF3, SOF11) - pixel-perfect encoding/decoding
     - Arithmetic coding JPEG (SOF9, SOF10) - full encode/decode support
     - 8-bit and 12-bit precision
     - Grayscale, YCbCr, CMYK, and YCCK color (1, 3, or 4 components)
@@ -23,6 +24,7 @@ module Color = Color
 module Exif = Exif
 module Arithmetic = Arithmetic
 module Icc = Icc
+module Predictor = Predictor
 
 (** {1 Types} *)
 
@@ -71,10 +73,13 @@ type color_mode =
 type encoding_mode =
   | Baseline
   | Progressive
+  | Lossless
       (** Encoding modes:
           - [Baseline]: Standard sequential DCT encoding (SOF0)
           - [Progressive]: Progressive DCT encoding (SOF2) for incremental
-            display *)
+            display
+          - [Lossless]: Lossless JPEG encoding (SOF3/SOF11) for pixel-perfect
+            compression *)
 
 type precision =
   | Precision_8
@@ -94,10 +99,12 @@ type encode_options = {
   quality : int;  (** Compression quality from 1 (worst) to 100 (best) *)
   subsampling : subsampling;  (** Chroma subsampling mode *)
   color_mode : color_mode;  (** Color or grayscale *)
-  encoding_mode : encoding_mode;  (** Baseline or progressive *)
+  encoding_mode : encoding_mode;  (** Baseline, progressive, or lossless *)
   restart_interval : int;  (** MCUs between RST markers, 0 = disabled *)
   precision : precision;  (** Sample precision: 8-bit or 12-bit *)
   entropy_coding : entropy_coding;  (** Huffman or arithmetic coding *)
+  predictor : int;  (** Predictor selection for lossless mode (1-7), 0 = auto *)
+  point_transform : int;  (** Point transform for lossless mode (0 = none) *)
 }
 (** Encoding options for JPEG output. *)
 

@@ -6,8 +6,10 @@ let marker_soi = 0xD8 (* Start of Image *)
 let marker_eoi = 0xD9 (* End of Image *)
 let marker_sof0 = 0xC0 (* Start of Frame (Baseline DCT) *)
 let marker_sof2 = 0xC2 (* Start of Frame (Progressive DCT) *)
+let marker_sof3 = 0xC3 (* Start of Frame (Lossless, Huffman) *)
 let marker_sof9 = 0xC9 (* Start of Frame (Extended sequential, arithmetic) *)
 let marker_sof10 = 0xCA (* Start of Frame (Progressive, arithmetic) *)
+let marker_sof11 = 0xCB (* Start of Frame (Lossless, arithmetic) *)
 let marker_dht = 0xC4 (* Define Huffman Table *)
 let marker_dac = 0xCC (* Define Arithmetic Conditioning *)
 let marker_dqt = 0xDB (* Define Quantization Table *)
@@ -59,6 +61,8 @@ type frame_type =
   | Progressive  (** SOF2: Progressive DCT, Huffman coding *)
   | ArithmeticSequential  (** SOF9: Extended sequential, arithmetic coding *)
   | ArithmeticProgressive  (** SOF10: Progressive, arithmetic coding *)
+  | LosslessHuffman  (** SOF3: Lossless, Huffman coding *)
+  | LosslessArithmetic  (** SOF11: Lossless, arithmetic coding *)
 
 type arithmetic_conditioning = {
   table_class : int; (* 0 = DC, 1 = AC *)
@@ -121,8 +125,10 @@ type marker_segment =
   | EOI
   | SOF0 of frame_header
   | SOF2 of frame_header
+  | SOF3 of frame_header  (** Lossless, Huffman coding *)
   | SOF9 of frame_header  (** Extended sequential, arithmetic coding *)
   | SOF10 of frame_header  (** Progressive, arithmetic coding *)
+  | SOF11 of frame_header  (** Lossless, arithmetic coding *)
   | DHT of huffman_table list
   | DAC of arithmetic_conditioning list  (** Arithmetic conditioning tables *)
   | DQT of quant_table list
@@ -367,12 +373,17 @@ let parse_markers data =
               SOF0 (parse_sof data content_start content_len Baseline)
             else if marker = marker_sof2 then
               SOF2 (parse_sof data content_start content_len Progressive)
+            else if marker = marker_sof3 then
+              SOF3 (parse_sof data content_start content_len LosslessHuffman)
             else if marker = marker_sof9 then
               SOF9
                 (parse_sof data content_start content_len ArithmeticSequential)
             else if marker = marker_sof10 then
               SOF10
                 (parse_sof data content_start content_len ArithmeticProgressive)
+            else if marker = marker_sof11 then
+              SOF11
+                (parse_sof data content_start content_len LosslessArithmetic)
             else if marker = marker_dht then
               DHT (parse_dht data content_start content_len)
             else if marker = marker_dac then
@@ -454,11 +465,17 @@ let write_sof0 buf frame = write_sof buf marker_sof0 frame
 (** Write SOF2 *)
 let write_sof2 buf frame = write_sof buf marker_sof2 frame
 
+(** Write SOF3 *)
+let write_sof3 buf frame = write_sof buf marker_sof3 frame
+
 (** Write SOF9 *)
 let write_sof9 buf frame = write_sof buf marker_sof9 frame
 
 (** Write SOF10 *)
 let write_sof10 buf frame = write_sof buf marker_sof10 frame
+
+(** Write SOF11 *)
+let write_sof11 buf frame = write_sof buf marker_sof11 frame
 
 (** Write DHT *)
 let write_dht buf tables =
@@ -570,8 +587,10 @@ let write_markers markers =
       | EOI -> write_marker buf marker_eoi
       | SOF0 frame -> write_sof0 buf frame
       | SOF2 frame -> write_sof2 buf frame
+      | SOF3 frame -> write_sof3 buf frame
       | SOF9 frame -> write_sof9 buf frame
       | SOF10 frame -> write_sof10 buf frame
+      | SOF11 frame -> write_sof11 buf frame
       | DHT tables -> write_dht buf tables
       | DAC tables -> write_dac buf tables
       | DQT tables -> write_dqt buf tables
