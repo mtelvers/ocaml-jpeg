@@ -121,6 +121,9 @@ let show_info filename =
             | Some s -> Printf.printf "    Software: %s\n" s
             | None -> ())
         | Jpeg.Markers.COM text -> Printf.printf "  [COM] Comment: %s\n" text
+        | Jpeg.Markers.APP2_ICC { sequence; count; data } ->
+            Printf.printf "  [APP2] ICC Profile chunk %d/%d (%d bytes)\n"
+              sequence count (Bytes.length data)
         | Jpeg.Markers.Unknown (marker, data) ->
             Printf.printf "  [0x%02X] Unknown (%d bytes)\n" marker
               (Bytes.length data))

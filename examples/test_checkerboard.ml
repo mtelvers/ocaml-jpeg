@@ -127,6 +127,7 @@ let () =
       | Jpeg.Markers.SOS _ -> Printf.printf "  SOS\n"
       | Jpeg.Markers.APP0 _ -> Printf.printf "  APP0\n"
       | Jpeg.Markers.APP1 _ -> Printf.printf "  APP1\n"
+      | Jpeg.Markers.APP2_ICC _ -> Printf.printf "  APP2_ICC\n"
       | Jpeg.Markers.COM _ -> Printf.printf "  COM\n"
       | Jpeg.Markers.Unknown (m, _) -> Printf.printf "  Unknown(0x%02x)\n" m
     ) markers

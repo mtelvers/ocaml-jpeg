@@ -15,7 +15,36 @@ let marker_dri = 0xDD (* Define Restart Interval *)
 let marker_sos = 0xDA (* Start of Scan *)
 let marker_app0 = 0xE0 (* JFIF marker *)
 let marker_app1 = 0xE1 (* EXIF marker *)
+let marker_app2 = 0xE2 (* ICC profile marker *)
 let marker_com = 0xFE (* Comment *)
+
+(** Zig-zag order for quantization tables in JPEG files *)
+let zigzag_order =
+  [|
+    0; 1; 8; 16; 9; 2; 3; 10;
+    17; 24; 32; 25; 18; 11; 4; 5;
+    12; 19; 26; 33; 40; 48; 41; 34;
+    27; 20; 13; 6; 7; 14; 21; 28;
+    35; 42; 49; 56; 57; 50; 43; 36;
+    29; 22; 15; 23; 30; 37; 44; 51;
+    58; 59; 52; 45; 38; 31; 39; 46;
+    53; 60; 61; 54; 47; 55; 62; 63;
+  |]
+
+(** Convert quantization table from zigzag to natural order.
+    zigzag_order.(i) gives the natural position for zigzag index i.
+    So natural[zigzag_order[i]] = zigzag[i] *)
+let zigzag_to_natural zigzag_table =
+  let result = Array.make 64 0 in
+  for i = 0 to 63 do
+    result.(zigzag_order.(i)) <- zigzag_table.(i)
+  done;
+  result
+
+(** Convert quantization table from natural to zigzag order.
+    zigzag[i] = natural[zigzag_order[i]] *)
+let natural_to_zigzag natural_table =
+  Array.init 64 (fun i -> natural_table.(zigzag_order.(i)))
 
 type component_info = {
   component_id : int;
@@ -101,6 +130,8 @@ type marker_segment =
   | SOS of scan_header * bytes (* header + entropy-coded data *)
   | APP0 of jfif_segment
   | APP1 of bytes (* EXIF data - parsed separately *)
+  | APP2_ICC of { sequence : int; count : int; data : bytes }
+      (** ICC profile chunk *)
   | COM of string
   | Unknown of int * bytes
 
@@ -183,11 +214,14 @@ let parse_dqt data pos len =
       let table_id = info land 0x0F in
 
       let elem_size = if precision = 0 then 1 else 2 in
-      let values =
+      (* Read values in zigzag order from file *)
+      let zigzag_values =
         Array.init 64 (fun i ->
             if precision = 0 then Bytes.get_uint8 data (offset + 1 + i)
             else read_u16 data (offset + 1 + (i * 2)))
       in
+      (* Convert to natural order for internal use *)
+      let values = zigzag_to_natural zigzag_values in
 
       let table = { table_id; precision; values } in
       parse_tables (offset + 1 + (64 * elem_size)) (table :: tables)
@@ -223,6 +257,25 @@ let is_jfif_signature data pos len =
   len >= 14
   && Bytes.sub_string data pos 4 = "JFIF"
   && Bytes.get_uint8 data (pos + 4) = 0x00
+
+(** ICC profile signature: "ICC_PROFILE\0" (12 bytes) *)
+let icc_signature = "ICC_PROFILE\x00"
+
+(** Check for ICC_PROFILE signature at position *)
+let is_icc_signature data pos len =
+  len >= 14 && Bytes.sub_string data pos 12 = icc_signature
+
+(** Parse APP2 ICC profile chunk.
+    Returns (sequence, count, data) tuple. *)
+let parse_app2 data pos len =
+  if is_icc_signature data pos len then begin
+    let sequence = Bytes.get_uint8 data (pos + 12) in
+    let count = Bytes.get_uint8 data (pos + 13) in
+    let data_start = pos + 14 in
+    let data_len = len - 14 in
+    Some (sequence, count, Bytes.sub data data_start data_len)
+  end
+  else None
 
 (** Parse APP0 JFIF segment *)
 let parse_app0 data pos len =
@@ -350,6 +403,13 @@ let parse_markers data =
             end
             else if marker = marker_app1 then
               APP1 (Bytes.sub data content_start content_len)
+            else if marker = marker_app2 then begin
+              match parse_app2 data content_start content_len with
+              | Some (sequence, count, icc_data) ->
+                  APP2_ICC { sequence; count; data = icc_data }
+              | None ->
+                  Unknown (marker, Bytes.sub data content_start content_len)
+            end
             else if marker = marker_com then
               COM (Bytes.sub_string data content_start content_len)
             else Unknown (marker, Bytes.sub data content_start content_len)
@@ -435,9 +495,11 @@ let write_dqt buf tables =
       let len = 2 + 1 + (64 * elem_size) in
       write_u16 buf len;
       Buffer.add_uint8 buf ((table.precision lsl 4) lor table.table_id);
+      (* Convert from natural order (internal) to zigzag order (file format) *)
+      let zigzag_values = natural_to_zigzag table.values in
       if table.precision = 0 then
-        Array.iter (fun v -> Buffer.add_uint8 buf v) table.values
-      else Array.iter (fun v -> write_u16 buf v) table.values)
+        Array.iter (fun v -> Buffer.add_uint8 buf v) zigzag_values
+      else Array.iter (fun v -> write_u16 buf v) zigzag_values)
     tables
 
 (** Write DRI *)
@@ -481,6 +543,16 @@ let write_app1 buf exif_data =
   write_u16 buf (2 + Bytes.length exif_data);
   Buffer.add_bytes buf exif_data
 
+(** Write APP2 ICC profile chunk *)
+let write_app2_icc buf sequence count data =
+  write_marker buf marker_app2;
+  (* Length = 2 (length field) + 12 (signature) + 2 (seq/count) + data length *)
+  write_u16 buf (2 + 12 + 2 + Bytes.length data);
+  Buffer.add_string buf icc_signature;
+  Buffer.add_uint8 buf sequence;
+  Buffer.add_uint8 buf count;
+  Buffer.add_bytes buf data
+
 (** Write comment *)
 let write_com buf text =
   write_marker buf marker_com;
@@ -509,6 +581,7 @@ let write_markers markers =
           Buffer.add_bytes buf data
       | APP0 jfif -> write_app0 buf jfif
       | APP1 exif_data -> write_app1 buf exif_data
+      | APP2_ICC { sequence; count; data } -> write_app2_icc buf sequence count data
       | COM text -> write_com buf text
       | Unknown (marker, data) ->
           write_marker buf marker;

@@ -11,4 +11,5 @@
   color
   bitstream
   exif
-  arithmetic))
+  arithmetic
+  icc))

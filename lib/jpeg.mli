@@ -22,6 +22,7 @@ module Quantization = Quantization
 module Color = Color
 module Exif = Exif
 module Arithmetic = Arithmetic
+module Icc = Icc
 
 (** {1 Types} *)
 
@@ -40,8 +41,9 @@ type image = {
   pixels : pixel_data;
   pixel_format : pixel_format;
   exif : Exif.t option;
+  icc_profile : Icc.t option;
 }
-(** JPEG image with pixel data and optional EXIF metadata. *)
+(** JPEG image with pixel data and optional EXIF metadata and ICC profile. *)
 
 (** {1 Encoding Options} *)
 
@@ -150,6 +152,14 @@ val create_image : int -> int -> pixel_data -> image
 val create_image_with_exif : int -> int -> pixel_data -> Exif.t -> image
 (** [create_image_with_exif width height pixels exif] creates a new image with
     EXIF metadata. *)
+
+val create_image_with_icc : int -> int -> pixel_data -> Icc.t -> image
+(** [create_image_with_icc width height pixels icc] creates a new image with
+    ICC color profile. *)
+
+val create_image_with_metadata : int -> int -> pixel_data -> Exif.t -> Icc.t -> image
+(** [create_image_with_metadata width height pixels exif icc] creates a new image
+    with both EXIF metadata and ICC color profile. *)
 
 val create_cmyk_image : int -> int -> pixel_data -> image
 (** [create_cmyk_image width height pixels] creates a new CMYK image from raw

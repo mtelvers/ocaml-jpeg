@@ -7,6 +7,7 @@ module Quantization = Jpeg.Quantization
 module Huffman = Jpeg.Huffman
 module Exif = Jpeg.Exif
 module Markers = Jpeg.Markers
+module Icc = Jpeg.Icc
 
 (** Test bitstream read/write round-trip *)
 let test_bitstream_roundtrip () =
@@ -986,9 +987,12 @@ let test_jpeg_arith_decoder_init () =
   (* Initialize JPEG decoder *)
   let decoder = Arith.init_jpeg_decoder data in
 
-  (* Verify decoder state is initialized *)
-  Alcotest.(check bool) "Decoder created" true (decoder.Arith.a > 0);
-  Alcotest.(check bool) "CT initialized" true (decoder.Arith.ct >= 0)
+  (* Verify decoder state is initialized correctly.
+     In libjpeg-style init: a=0, ct=-16 to force reading 2 initial bytes
+     during the first renormalization in decode. *)
+  Alcotest.(check int) "Initial A register" 0 decoder.Arith.a;
+  Alcotest.(check int) "Initial CT" (-16) decoder.Arith.ct;
+  Alcotest.(check bool) "Data attached" true (Bytes.length decoder.Arith.data > 0)
 
 (** Test JPEG arithmetic DC stat bins *)
 let test_jpeg_arith_dc_bins () =
@@ -1621,6 +1625,262 @@ let test_checkerboard_arithmetic () =
   Alcotest.(check bool) "Average error < 10" true (avg_error < 10.0);
   Alcotest.(check bool) "Max error < 50" true (!max_error < 50)
 
+(** Test ICC profile basic operations *)
+let test_icc_basic () =
+  (* Empty ICC profile *)
+  let empty = Icc.empty in
+  Alcotest.(check bool) "Empty profile is empty" true (Icc.is_empty empty);
+
+  (* Create from bytes *)
+  let data = Bytes.of_string "test ICC profile data" in
+  let icc = Icc.from_bytes data in
+  Alcotest.(check bool) "Non-empty profile" false (Icc.is_empty icc);
+  Alcotest.(check bytes) "Data roundtrip" data (Icc.to_bytes icc)
+
+(** Test ICC chunk splitting and reassembly *)
+let test_icc_chunks () =
+  (* Small profile (single chunk) *)
+  let small_data = Bytes.make 1000 '\xAB' in
+  let small_icc = Icc.from_bytes small_data in
+  let chunks = Icc.to_chunks small_icc in
+  Alcotest.(check int) "Single chunk count" 1 (List.length chunks);
+  (match chunks with
+  | [ (seq, count, _) ] ->
+      Alcotest.(check int) "Sequence is 1" 1 seq;
+      Alcotest.(check int) "Count is 1" 1 count
+  | _ -> Alcotest.fail "Expected single chunk");
+
+  (* Reassemble small profile *)
+  let reassembled = Icc.from_chunks chunks in
+  (match reassembled with
+  | Some r -> Alcotest.(check bytes) "Small roundtrip" small_data (Icc.to_bytes r)
+  | None -> Alcotest.fail "Failed to reassemble small profile");
+
+  (* Large profile (multiple chunks) *)
+  let large_size = 100000 in
+  (* > 65519, so needs 2 chunks *)
+  let large_data = Bytes.init large_size (fun i -> Char.chr (i mod 256)) in
+  let large_icc = Icc.from_bytes large_data in
+  let large_chunks = Icc.to_chunks large_icc in
+  Alcotest.(check int) "Multiple chunks" 2 (List.length large_chunks);
+  (match large_chunks with
+  | [ (seq1, count1, _); (seq2, count2, _) ] ->
+      Alcotest.(check int) "First seq" 1 seq1;
+      Alcotest.(check int) "Second seq" 2 seq2;
+      Alcotest.(check int) "Count 1" 2 count1;
+      Alcotest.(check int) "Count 2" 2 count2
+  | _ -> Alcotest.fail "Expected 2 chunks");
+
+  (* Reassemble large profile *)
+  let reassembled_large = Icc.from_chunks large_chunks in
+  (match reassembled_large with
+  | Some r -> Alcotest.(check bytes) "Large roundtrip" large_data (Icc.to_bytes r)
+  | None -> Alcotest.fail "Failed to reassemble large profile")
+
+(** Test ICC chunks with incomplete/invalid data *)
+let test_icc_invalid_chunks () =
+  (* Empty chunks *)
+  let result = Icc.from_chunks [] in
+  Alcotest.(check bool) "Empty chunks" true (Option.is_none result);
+
+  (* Missing chunk *)
+  let data1 = Bytes.of_string "chunk1" in
+  let data3 = Bytes.of_string "chunk3" in
+  let incomplete = [ (1, 3, data1); (3, 3, data3) ] in
+  (* Missing chunk 2 *)
+  let result2 = Icc.from_chunks incomplete in
+  Alcotest.(check bool) "Incomplete chunks" true (Option.is_none result2);
+
+  (* Mismatched count *)
+  let data_a = Bytes.of_string "a" in
+  let data_b = Bytes.of_string "b" in
+  let mismatched = [ (1, 2, data_a); (2, 3, data_b) ] in
+  let result3 = Icc.from_chunks mismatched in
+  Alcotest.(check bool) "Mismatched count" true (Option.is_none result3)
+
+(** Test ICC profile encode/decode roundtrip *)
+let test_icc_jpeg_roundtrip () =
+  let width = 16 in
+  let height = 16 in
+
+  (* Create a simple gradient image *)
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for y = 0 to height - 1 do
+    for x = 0 to width - 1 do
+      let idx = ((y * width) + x) * 3 in
+      Bigarray.Array1.set pixels idx (x * 16);
+      Bigarray.Array1.set pixels (idx + 1) (y * 16);
+      Bigarray.Array1.set pixels (idx + 2) 128
+    done
+  done;
+
+  (* Create ICC profile data (simulated sRGB profile header) *)
+  let icc_data = Bytes.make 500 '\x00' in
+  (* Put some recognizable data in it *)
+  Bytes.blit_string "acsp" 0 icc_data 36 4;
+  (* ICC signature at offset 36 *)
+  for i = 0 to 127 do
+    Bytes.set_uint8 icc_data i (i land 0xFF)
+  done;
+
+  let icc = Icc.from_bytes icc_data in
+  let original = Jpeg.create_image_with_icc width height pixels icc in
+
+  (* Encode to JPEG *)
+  let jpeg_data = Jpeg.write_bytes ~quality:90 original in
+
+  (* Verify APP2 ICC marker is present *)
+  let markers = Markers.parse_markers jpeg_data in
+  let has_icc =
+    List.exists
+      (fun m -> match m with Markers.APP2_ICC _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has APP2_ICC marker" true has_icc;
+
+  (* Decode back *)
+  let decoded = Jpeg.read_bytes jpeg_data in
+
+  Alcotest.(check int) "Decoded width" width decoded.Jpeg.width;
+  Alcotest.(check int) "Decoded height" height decoded.Jpeg.height;
+
+  (* Verify ICC profile is preserved *)
+  match decoded.Jpeg.icc_profile with
+  | None -> Alcotest.fail "ICC profile not decoded"
+  | Some decoded_icc ->
+      Alcotest.(check bytes)
+        "ICC profile preserved" icc_data (Icc.to_bytes decoded_icc)
+
+(** Test large ICC profile (multiple chunks) roundtrip *)
+let test_icc_large_roundtrip () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+
+  (* Create large ICC profile (needs multiple APP2 segments) *)
+  let large_size = 100000 in
+  let icc_data = Bytes.init large_size (fun i -> Char.chr ((i * 7) mod 256)) in
+  let icc = Icc.from_bytes icc_data in
+  let original = Jpeg.create_image_with_icc width height pixels icc in
+
+  (* Encode to JPEG *)
+  let jpeg_data = Jpeg.write_bytes ~quality:90 original in
+
+  (* Count APP2_ICC markers *)
+  let markers = Markers.parse_markers jpeg_data in
+  let icc_markers =
+    List.filter
+      (fun m -> match m with Markers.APP2_ICC _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Multiple ICC chunks" true (List.length icc_markers >= 2);
+
+  (* Decode back *)
+  let decoded = Jpeg.read_bytes jpeg_data in
+
+  (* Verify ICC profile is preserved *)
+  match decoded.Jpeg.icc_profile with
+  | None -> Alcotest.fail "Large ICC profile not decoded"
+  | Some decoded_icc ->
+      Alcotest.(check bytes)
+        "Large ICC profile preserved" icc_data (Icc.to_bytes decoded_icc)
+
+(** Test image without ICC profile (backward compatibility) *)
+let test_icc_no_profile () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+  let original = Jpeg.create_image width height pixels in
+
+  (* Verify no ICC profile *)
+  Alcotest.(check bool) "No ICC on original" true (Option.is_none original.Jpeg.icc_profile);
+
+  (* Encode to JPEG *)
+  let jpeg_data = Jpeg.write_bytes ~quality:90 original in
+
+  (* Verify no APP2 ICC marker *)
+  let markers = Markers.parse_markers jpeg_data in
+  let has_icc =
+    List.exists
+      (fun m -> match m with Markers.APP2_ICC _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "No APP2_ICC marker" false has_icc;
+
+  (* Decode back *)
+  let decoded = Jpeg.read_bytes jpeg_data in
+
+  (* Verify no ICC profile *)
+  Alcotest.(check bool)
+    "No ICC on decoded" true
+    (Option.is_none decoded.Jpeg.icc_profile)
+
+(** Test ICC with EXIF together *)
+let test_icc_with_exif () =
+  let width = 16 in
+  let height = 16 in
+
+  let pixels =
+    Bigarray.Array1.create Bigarray.int8_unsigned Bigarray.c_layout
+      (width * height * 3)
+  in
+  for i = 0 to (width * height * 3) - 1 do
+    Bigarray.Array1.set pixels i (i mod 256)
+  done;
+
+  let exif = Exif.create_minimal ~orientation:6 ~software:"Test" () in
+  let icc_data = Bytes.make 200 '\xCC' in
+  let icc = Icc.from_bytes icc_data in
+
+  let original = Jpeg.create_image_with_metadata width height pixels exif icc in
+
+  (* Encode to JPEG *)
+  let jpeg_data = Jpeg.write_bytes ~quality:90 original in
+
+  (* Verify both APP1 and APP2 markers present *)
+  let markers = Markers.parse_markers jpeg_data in
+  let has_exif =
+    List.exists (fun m -> match m with Markers.APP1 _ -> true | _ -> false) markers
+  in
+  let has_icc =
+    List.exists
+      (fun m -> match m with Markers.APP2_ICC _ -> true | _ -> false)
+      markers
+  in
+  Alcotest.(check bool) "Has EXIF" true has_exif;
+  Alcotest.(check bool) "Has ICC" true has_icc;
+
+  (* Decode back *)
+  let decoded = Jpeg.read_bytes jpeg_data in
+
+  (* Verify EXIF *)
+  (match decoded.Jpeg.exif with
+  | None -> Alcotest.fail "EXIF not decoded"
+  | Some e -> Alcotest.(check (option int)) "Orientation" (Some 6) e.Exif.orientation);
+
+  (* Verify ICC *)
+  match decoded.Jpeg.icc_profile with
+  | None -> Alcotest.fail "ICC not decoded with EXIF"
+  | Some decoded_icc ->
+      Alcotest.(check bytes) "ICC preserved with EXIF" icc_data (Icc.to_bytes decoded_icc)
+
 (** All tests *)
 let () =
   Alcotest.run "JPEG Library"
@@ -1732,5 +1992,15 @@ let () =
           Alcotest.test_case "block-encode" `Quick test_jpeg_arith_block_encode;
           Alcotest.test_case "file-size-comparison" `Quick test_arith_file_size;
           Alcotest.test_case "checkerboard" `Quick test_checkerboard_arithmetic;
+        ] );
+      ( "icc",
+        [
+          Alcotest.test_case "basic" `Quick test_icc_basic;
+          Alcotest.test_case "chunks" `Quick test_icc_chunks;
+          Alcotest.test_case "invalid-chunks" `Quick test_icc_invalid_chunks;
+          Alcotest.test_case "jpeg-roundtrip" `Quick test_icc_jpeg_roundtrip;
+          Alcotest.test_case "large-roundtrip" `Quick test_icc_large_roundtrip;
+          Alcotest.test_case "no-profile" `Quick test_icc_no_profile;
+          Alcotest.test_case "with-exif" `Quick test_icc_with_exif;
         ] );
     ]

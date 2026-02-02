@@ -9,6 +9,7 @@ module Quantization = Quantization
 module Color = Color
 module Exif = Exif
 module Arithmetic = Arithmetic
+module Icc = Icc
 
 (** Pixel format for image data *)
 type pixel_format =
@@ -25,6 +26,7 @@ type image = {
   pixels : pixel_data;
   pixel_format : pixel_format;
   exif : Exif.t option;
+  icc_profile : Icc.t option;
 }
 (** JPEG image *)
 
@@ -78,6 +80,7 @@ type decode_state = {
   mutable arith_ac_conditioning : int array; (* Kx values for AC *)
   mutable restart_interval : int;
   mutable exif : Exif.t option;
+  mutable icc_chunks : (int * int * bytes) list;
 }
 (** Decoding state *)
 
@@ -365,6 +368,7 @@ let create_decode_state () =
     (* Default Kx=5 *)
     restart_interval = 0;
     exif = None;
+    icc_chunks = [];
   }
 
 (** Process marker segments and build decode state *)
@@ -405,6 +409,8 @@ let process_markers markers =
             tables
       | Markers.DRI interval -> state.restart_interval <- interval
       | Markers.APP1 data -> state.exif <- Some (Exif.parse data)
+      | Markers.APP2_ICC { sequence; count; data } ->
+          state.icc_chunks <- (sequence, count, data) :: state.icc_chunks
       | _ -> ())
     markers;
 
@@ -1117,12 +1123,16 @@ let read_bytes data =
             decode_arith_progressive markers frame state
       in
 
+      (* Reconstruct ICC profile from chunks if present *)
+      let icc_profile = Icc.from_chunks state.icc_chunks in
+
       {
         width = frame.Markers.width;
         height = frame.Markers.height;
         pixels;
         pixel_format;
         exif = state.exif;
+        icc_profile;
       }
 
 (** Read JPEG from file *)
@@ -1805,6 +1815,13 @@ let write_bytes_with_options options image =
     @ (match image.exif with
       | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
       | None -> [])
+    @ (match image.icc_profile with
+      | Some icc ->
+          List.map
+            (fun (seq, count, data) ->
+              Markers.APP2_ICC { sequence = seq; count; data })
+            (Icc.to_chunks icc)
+      | None -> [])
     @ [
         Markers.DQT
           (if is_grayscale then
@@ -2350,6 +2367,13 @@ let write_bytes ?(quality = 75) image =
     @ (match image.exif with
       | Some exif -> [ Markers.APP1 (Exif.to_bytes exif) ]
       | None -> [])
+    @ (match image.icc_profile with
+      | Some icc ->
+          List.map
+            (fun (seq, count, data) ->
+              Markers.APP2_ICC { sequence = seq; count; data })
+            (Icc.to_chunks icc)
+      | None -> [])
     @ [
         (* Quantization tables *)
         Markers.DQT
@@ -2444,15 +2468,23 @@ let write ?(quality = 75) filename image =
 
 (** Create an image from raw RGB data *)
 let create_image width height pixels =
-  { width; height; pixels; pixel_format = RGB24; exif = None }
+  { width; height; pixels; pixel_format = RGB24; exif = None; icc_profile = None }
 
 (** Create an image with EXIF *)
 let create_image_with_exif width height pixels exif =
-  { width; height; pixels; pixel_format = RGB24; exif = Some exif }
+  { width; height; pixels; pixel_format = RGB24; exif = Some exif; icc_profile = None }
 
 (** Create a CMYK image *)
 let create_cmyk_image width height pixels =
-  { width; height; pixels; pixel_format = CMYK32; exif = None }
+  { width; height; pixels; pixel_format = CMYK32; exif = None; icc_profile = None }
+
+(** Create an image with ICC profile *)
+let create_image_with_icc width height pixels icc =
+  { width; height; pixels; pixel_format = RGB24; exif = None; icc_profile = Some icc }
+
+(** Create an image with both EXIF and ICC profile *)
+let create_image_with_metadata width height pixels exif icc =
+  { width; height; pixels; pixel_format = RGB24; exif = Some exif; icc_profile = Some icc }
 
 (** Get pixel at (x, y) as (r, g, b) for RGB24 images *)
 let get_pixel image x y =
