@@ -421,7 +421,7 @@ let decode_dc_diff state bins prev_diff l =
   end
 
 (** Decode AC coefficients for a block (ITU-T T.81 F.1.4.4.2) *)
-let decode_ac_block state bins kx =
+let decode_ac_block state bins _kx =
   let coeffs = Array.make 64 0 in
   let k = ref 1 in
   (* Start at position 1 (DC is position 0) *)
@@ -446,10 +446,11 @@ let decode_ac_block state bins kx =
         let sign = decode_decision bins.ac_sign.(ki) state in
         let mag_ctx = if sign = 0 then bins.ac_sp.(ki) else bins.ac_sn.(ki) in
 
-        (* Decode magnitude category *)
+        (* Decode magnitude category via unary coding.
+           Kx only affects context selection per the spec, not the max category.
+           The hard limit is 15, matching the encoder. *)
         let rec decode_category sz =
           if sz >= 15 then sz
-          else if sz > kx then sz (* Kx limits max category *)
           else begin
             let continue = decode_decision mag_ctx state in
             if continue = 0 then sz else decode_category (sz + 1)
@@ -980,6 +981,75 @@ let encode_arith_block state component_idx coeffs =
 
   (* Encode AC coefficients *)
   encode_ac_block state.encoder ac_bins coeffs kx
+
+(** Encode only the DC coefficient of a block (for progressive DC scans) *)
+let encode_arith_dc_only state component_idx dc_value =
+  let dc_bins = state.dc_bins.(component_idx) in
+  let l = state.l.(component_idx) in
+  let prev_dc = state.prev_dc.(component_idx) in
+  let dc_diff = dc_value - prev_dc in
+  encode_dc_diff state.encoder dc_bins dc_diff l;
+  state.prev_dc.(component_idx) <- dc_value
+
+(** Encode AC coefficients in a spectral range (for progressive AC scans) *)
+let encode_arith_ac_only state component_idx coeffs ~ss ~se:scan_se =
+  let ac_bins = state.ac_bins.(component_idx) in
+  let kx = state.kx.(component_idx) in
+
+  (* Find the last non-zero coefficient in the spectral range *)
+  let last_nz = ref (ss - 1) in
+  for k = ss to scan_se do
+    if coeffs.(k) <> 0 then last_nz := k
+  done;
+
+  let k = ref ss in
+  while !k <= scan_se do
+    let ki = !k - 1 in
+
+    if !k > !last_nz then begin
+      (* SE: End of block - signal EOB *)
+      encode_decision ac_bins.ac_se.(ki) state.encoder 1;
+      k := scan_se + 1
+    end
+    else begin
+      encode_decision ac_bins.ac_se.(ki) state.encoder 0;
+
+      let coeff = coeffs.(!k) in
+      if coeff = 0 then begin
+        encode_decision ac_bins.ac_s0.(ki) state.encoder 0;
+        incr k
+      end
+      else begin
+        encode_decision ac_bins.ac_s0.(ki) state.encoder 1;
+
+        let sign = if coeff < 0 then 1 else 0 in
+        encode_decision ac_bins.ac_sign.(ki) state.encoder sign;
+
+        let mag_ctx = if sign = 0 then ac_bins.ac_sp.(ki) else ac_bins.ac_sn.(ki) in
+        let mag = abs coeff in
+
+        let rec find_category m cat =
+          if m = 0 then cat else find_category (m lsr 1) (cat + 1)
+        in
+        let category = find_category mag 0 in
+        let category = min category (max 15 kx) in
+
+        for _ = 1 to category - 1 do
+          encode_decision mag_ctx state.encoder 1
+        done;
+        encode_decision mag_ctx state.encoder 0;
+
+        if category > 1 then begin
+          for i = category - 2 downto 0 do
+            let bit = (mag lsr i) land 1 in
+            encode_decision ac_bins.ac_x1.(ki) state.encoder bit
+          done
+        end;
+
+        incr k
+      end
+    end
+  done
 
 (** Encode a single prediction error for lossless JPEG.
     Unlike encode_arith_block, this encodes the diff value directly

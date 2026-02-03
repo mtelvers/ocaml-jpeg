@@ -915,7 +915,7 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
 
             (* Decode AC coefficients for this spectral range *)
             let ac_bins = arith_state.Arithmetic.ac_bins.(sci) in
-            let kx = arith_state.Arithmetic.kx.(sci) in
+            let _kx = arith_state.Arithmetic.kx.(sci) in
 
             let k = ref ss in
             while !k <= se do
@@ -948,9 +948,10 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
                     else ac_bins.Arithmetic.ac_sn.(ki)
                   in
 
-                  (* Decode magnitude category *)
+                  (* Decode magnitude category - kx only affects context
+                     selection, not the max category (hard limit is 15) *)
                   let rec decode_category sz =
-                    if sz >= 15 || sz > kx then sz
+                    if sz >= 15 then sz
                     else begin
                       let continue =
                         Arithmetic.decode_decision mag_ctx
@@ -2513,10 +2514,8 @@ let write_bytes_with_options options image =
                           if block_idx < num_blocks.(ci) then begin
                             let coeffs = coefficients.(ci).(block_idx) in
                             let dc_value = coeffs.(0) asr al in
-                            let dc_coeffs = Array.make 64 0 in
-                            dc_coeffs.(0) <- dc_value;
-                            Arithmetic.encode_arith_block arith_state sci
-                              dc_coeffs
+                            Arithmetic.encode_arith_dc_only arith_state sci
+                              dc_value
                           end
                         done
                       done)
@@ -2558,9 +2557,9 @@ let write_bytes_with_options options image =
                             for k = ss to se do
                               ac_coeffs.(k) <- orig_coeffs.(k) asr al
                             done;
-                            (* For AC-only scan, we skip DC encoding *)
-                            Arithmetic.encode_arith_block arith_state sci
-                              ac_coeffs
+                            (* For AC-only scan, encode only AC coefficients in range *)
+                            Arithmetic.encode_arith_ac_only arith_state sci
+                              ac_coeffs ~ss ~se
                           end
                         done
                       done)

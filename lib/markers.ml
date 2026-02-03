@@ -198,7 +198,7 @@ let parse_dht data pos len =
 (** Parse DAC (Define Arithmetic Conditioning) *)
 let parse_dac data pos len =
   let rec parse_tables offset tables =
-    if offset >= pos + len - 2 then List.rev tables
+    if offset + 1 >= pos + len then List.rev tables
     else begin
       let info = Bytes.get_uint8 data offset in
       let table_class = info lsr 4 in

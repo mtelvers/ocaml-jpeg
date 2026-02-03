@@ -21,45 +21,53 @@ let () =
   done;
   Printf.printf "\n\n";
 
-  (* Now decode bit by bit to see what happens *)
-  Printf.printf "Decoding step by step:\n";
-  let decoder = A.init_jpeg_decoder encoded in
-  let dc_bins = A.create_dc_stat_bins () in
+  (* Decode using the proper scan decoder API *)
+  Printf.printf "Decoding via decode_arith_block:\n";
+  let dec_state = A.init_arith_scan_decoder encoded 1 in
+  let decoded_coeffs = A.decode_arith_block dec_state 0 in
+  let decoded_dc = decoded_coeffs.(0) in
+  Printf.printf "  Decoded DC = %d (expected -64)\n\n" decoded_dc;
 
-  Printf.printf "Initial decoder: a=%04x c=%08x\n\n" decoder.A.a decoder.A.c;
-
-  (* S0: is zero? *)
-  Printf.printf "1. Decode S0 (is_zero):\n";
-  let is_zero = A.decode_decision dc_bins.A.dc_s0 decoder in
-  Printf.printf "   is_zero = %d (expected 0 meaning non-zero)\n\n" is_zero;
-
-  if is_zero = 1 then begin
-    Printf.printf "   ERROR: got is_zero=1, DC should be 0\n";
+  if decoded_dc <> -64 then begin
+    Printf.printf "FAIL: DC mismatch: got %d, expected -64\n" decoded_dc;
     exit 1
   end;
 
-  (* Sign *)
+  (* Also do a step-by-step manual decode to trace the protocol *)
+  Printf.printf "Step-by-step manual decode trace:\n";
+  let decoder = A.init_jpeg_decoder encoded in
+  let dc_bins = A.create_dc_stat_bins () in
+
+  (* S0: is the difference non-zero?
+     Convention: decode_decision returns 0 → diff is zero, 1 → diff is non-zero *)
+  Printf.printf "1. Decode S0 (non-zero flag):\n";
+  let is_nonzero = A.decode_decision dc_bins.A.dc_s0 decoder in
+  Printf.printf "   is_nonzero = %d (expected 1 for DC=-64)\n\n" is_nonzero;
+
+  if is_nonzero = 0 then begin
+    Printf.printf "   ERROR: got 0 (zero), but DC should be non-zero\n";
+    exit 1
+  end;
+
+  (* Sign: 0 = positive, 1 = negative *)
   Printf.printf "2. Decode sign:\n";
   let sign = A.decode_decision dc_bins.A.dc_sign decoder in
   Printf.printf "   sign = %d (expected 1 for negative)\n\n" sign;
 
   let sign_ctx = if sign = 0 then dc_bins.A.dc_sp else dc_bins.A.dc_sn in
 
-  (* Category *)
+  (* Category via unary coding *)
   Printf.printf "3. Decode category (unary):\n";
-  let rec decode_category sz bits =
-    if sz >= 15 then (sz, bits)
+  let rec decode_category sz =
+    if sz >= 15 then sz
     else begin
       let bit = A.decode_decision sign_ctx.(min sz 4) decoder in
       Printf.printf "   sz=%d: bit=%d\n" sz bit;
-      if bit = 0 then (sz, bits @ [bit])
-      else decode_category (sz + 1) (bits @ [bit])
+      if bit = 0 then sz else decode_category (sz + 1)
     end
   in
-  let category, cat_bits = decode_category 1 [] in
-  Printf.printf "   Category = %d (bits: " category;
-  List.iter (Printf.printf "%d") cat_bits;
-  Printf.printf "0) (expected 7)\n\n";
+  let category = decode_category 1 in
+  Printf.printf "   Category = %d (expected 7)\n\n" category;
 
   (* Magnitude bits *)
   Printf.printf "4. Decode magnitude bits (category-1 = %d bits):\n" (category - 1);
@@ -75,7 +83,14 @@ let () =
   Printf.printf "   extra_bits = %d\n\n" extra_bits;
 
   let magnitude = (1 lsl (category - 1)) + extra_bits in
-  Printf.printf "5. Magnitude = (1 << %d) + %d = %d\n" (category-1) extra_bits magnitude;
+  Printf.printf "5. Magnitude = (1 << %d) + %d = %d\n" (category - 1) extra_bits magnitude;
 
   let dc_value = if sign = 0 then magnitude else -magnitude in
-  Printf.printf "6. DC value = %d (expected -64)\n" dc_value
+  Printf.printf "6. DC value = %d (expected -64)\n\n" dc_value;
+
+  if dc_value = -64 then
+    Printf.printf "SUCCESS: Manual step-by-step decode matches expected value\n"
+  else begin
+    Printf.printf "FAIL: Manual decode got %d, expected -64\n" dc_value;
+    exit 1
+  end
