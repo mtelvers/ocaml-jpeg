@@ -643,7 +643,7 @@ let debug_byteout = ref false
     - Otherwise we output stacked 0xFFs (with stuffing) then output B
 *)
 let byteout state =
-  ensure_capacity state 4;
+  ensure_capacity state (2 * state.st + 4);
 
   if !debug_byteout then
     Printf.printf "byteout enter: c=0x%08x ct=%d st=%d bp=%d buffer=0x%x output_pos=%d\n"
@@ -653,42 +653,42 @@ let byteout state =
   let temp = state.c lsr 19 in
 
   if temp > 0xFF then begin
-    (* Carry occurred - handle overflow over all stacked 0xFF bytes *)
+    (* Carry occurred - propagate through stacked 0xFF bytes.
+       Each stacked 0xFF + carry = 0x100: output 0x00, carry propagates.
+       Buffer gets incremented by the final carry.
+       Order: buffer+1 first, then carried zero bytes. *)
     if state.buffer >= 0 then begin
-      (* Output any pending zero bytes first (zc handling from libjpeg) *)
-      (* Output stacked 0xFF bytes - they become 0x00 due to carry *)
+      let new_buffer = state.buffer + 1 in
+      (* Output buffer+1 (carry applied) *)
+      Bytes.set_uint8 state.output state.output_pos new_buffer;
+      state.output_pos <- state.output_pos + 1;
+      (* If buffer+1 = 0xFF, add stuff byte *)
+      if new_buffer = 0xFF then begin
+        Bytes.set_uint8 state.output state.output_pos 0x00;
+        state.output_pos <- state.output_pos + 1
+      end;
+      (* Output stacked 0xFF bytes that became 0x00 from carry *)
       while state.st > 0 do
         Bytes.set_uint8 state.output state.output_pos 0x00;
         state.output_pos <- state.output_pos + 1;
         state.st <- state.st - 1
-      done;
-      (* Output buffer + 1 (the carry increments buffer) *)
-      let new_buffer = state.buffer + 1 in
-      Bytes.set_uint8 state.output state.output_pos new_buffer;
-      state.output_pos <- state.output_pos + 1;
-      (* If buffer+1 == 0xFF, add stuff byte *)
-      if new_buffer = 0xFF then begin
-        Bytes.set_uint8 state.output state.output_pos 0x00;
-        state.output_pos <- state.output_pos + 1
-      end
+      done
     end;
-    (* The 3 spacer bits in C guarantee new buffer can't be 0xFF here *)
     state.buffer <- temp land 0xFF
   end
   else if temp = 0xFF then begin
-    (* Stack 0xFF byte (might overflow later) *)
+    (* Stack 0xFF byte (might overflow later from carry) *)
     state.st <- state.st + 1
   end
   else begin
-    (* Output all stacked 0xFF bytes - they won't overflow anymore *)
+    (* No carry possible - safe to output everything *)
     if state.buffer >= 0 then begin
-      (* Output buffer first *)
-      if state.buffer = 0 then begin
-        (* Skip leading zeros - this is the "zc" optimization from libjpeg *)
-        ()
-      end
-      else begin
-        Bytes.set_uint8 state.output state.output_pos state.buffer;
+      (* Output buffer byte *)
+      Bytes.set_uint8 state.output state.output_pos state.buffer;
+      state.output_pos <- state.output_pos + 1;
+      (* If buffer was 0xFF, add stuff byte *)
+      if state.buffer = 0xFF then begin
+        Bytes.set_uint8 state.output state.output_pos 0x00;
         state.output_pos <- state.output_pos + 1
       end
     end;
@@ -700,7 +700,7 @@ let byteout state =
       state.output_pos <- state.output_pos + 1;
       state.st <- state.st - 1
     done;
-    (* New output byte (can still overflow later) *)
+    (* New buffer byte (might carry later) *)
     state.buffer <- temp land 0xFF
   end;
 
@@ -980,6 +980,20 @@ let encode_arith_block state component_idx coeffs =
 
   (* Encode AC coefficients *)
   encode_ac_block state.encoder ac_bins coeffs kx
+
+(** Encode a single prediction error for lossless JPEG.
+    Unlike encode_arith_block, this encodes the diff value directly
+    without computing a difference from prev_dc. The prev_dc is still
+    updated for statistical context purposes. *)
+let encode_lossless_diff state component_idx diff =
+  let dc_bins = state.dc_bins.(component_idx) in
+  let l = state.l.(component_idx) in
+
+  (* Encode the prediction error directly *)
+  encode_dc_diff state.encoder dc_bins diff l;
+
+  (* Update prev_dc for statistical context (used for adaptive probability) *)
+  state.prev_dc.(component_idx) <- diff
 
 (** Reset encoder state at restart marker *)
 let reset_arith_encoder state =

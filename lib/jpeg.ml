@@ -1159,8 +1159,8 @@ let decode_lossless_diff_arithmetic (arith_state : Arithmetic.arith_scan_state) 
   let prev_dc = arith_state.Arithmetic.prev_dc.(component_idx) in
   let l = arith_state.Arithmetic.l.(component_idx) in
   let diff = Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins prev_dc l in
-  (* Update prev_dc for context *)
-  arith_state.Arithmetic.prev_dc.(component_idx) <- prev_dc + diff;
+  (* Update prev_dc for context - must match encoder's encode_lossless_diff *)
+  arith_state.Arithmetic.prev_dc.(component_idx) <- diff;
   diff
 
 (** Decode lossless JPEG scan using arithmetic coding *)
@@ -2970,10 +2970,8 @@ let write_bytes_with_options options image =
             let diff = Predictor.compute_diff ~sample ~predicted
                 ~precision:precision_value ~point_transform in
 
-            (* Encode as DC-only block for arithmetic coding *)
-            let dc_only_block = Array.make 64 0 in
-            dc_only_block.(0) <- diff;
-            Arithmetic.encode_arith_block arith_state ci dc_only_block
+            (* Encode the prediction error directly for lossless mode *)
+            Arithmetic.encode_lossless_diff arith_state ci diff
           done;
 
           incr mcu_count

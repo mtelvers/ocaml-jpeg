@@ -270,13 +270,10 @@ let () =
   done;
 
   Printf.printf "\n--- Arithmetic Coding ---\n";
-  Printf.printf "(NOTE: Arithmetic lossless is not fully implemented yet)\n";
-  (* Skip arithmetic tests for now since the implementation is incomplete
   for pred = 1 to 7 do
     if not (test_lossless_roundtrip ~predictor:pred ~arithmetic:true ()) then
       all_pass := false
   done;
-  *)
 
   Printf.printf "\n--- Grayscale ---\n";
   test_grayscale_lossless ();
