@@ -1610,15 +1610,21 @@ type scan_spec = {
 }
 (** Scan specification for progressive encoding *)
 
-(** Default progressive scan pattern - 3 scans for good progressive display *)
+(** Default progressive scan pattern - standard compliant.
+    DC scans can include multiple components, but AC scans (ss > 0) must be
+    single-component per JPEG spec (ITU-T T.81 section B.2.3). *)
 let default_progressive_scans =
   [
     (* DC for all components - shows blocky preview immediately *)
     { components = [ 0; 1; 2 ]; ss = 0; se = 0; ah = 0; al = 0 };
-    (* Low-frequency AC - adds basic detail *)
-    { components = [ 0; 1; 2 ]; ss = 1; se = 5; ah = 0; al = 0 };
-    (* High-frequency AC - completes image *)
-    { components = [ 0; 1; 2 ]; ss = 6; se = 63; ah = 0; al = 0 };
+    (* Y (luminance) AC coefficients 1-5 *)
+    { components = [ 0 ]; ss = 1; se = 5; ah = 0; al = 0 };
+    (* Cb AC coefficients 1-63 *)
+    { components = [ 1 ]; ss = 1; se = 63; ah = 0; al = 0 };
+    (* Cr AC coefficients 1-63 *)
+    { components = [ 2 ]; ss = 1; se = 63; ah = 0; al = 0 };
+    (* Y AC coefficients 6-63 - completes image *)
+    { components = [ 0 ]; ss = 6; se = 63; ah = 0; al = 0 };
   ]
 
 (** Grayscale progressive scan pattern *)
