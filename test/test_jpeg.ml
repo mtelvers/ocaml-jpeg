@@ -1001,28 +1001,26 @@ let test_jpeg_arith_decoder_init () =
 (** Test JPEG arithmetic DC stat bins *)
 let test_jpeg_arith_dc_bins () =
   let module Arith = Jpeg.Arithmetic in
-  (* Create DC stat bins *)
+  (* Create DC stat bins - now a flat array of 64 contexts *)
   let bins = Arith.create_dc_stat_bins () in
 
-  (* Verify all contexts are initialized *)
-  Alcotest.(check int) "DC s0 index" 0 bins.Arith.dc_s0.Arith.index;
-  Alcotest.(check int) "DC sign index" 0 bins.Arith.dc_sign.Arith.index;
-  Alcotest.(check int) "DC sp count" 5 (Array.length bins.Arith.dc_sp);
-  Alcotest.(check int) "DC sn count" 5 (Array.length bins.Arith.dc_sn)
+  (* Verify flat array size *)
+  Alcotest.(check int) "DC bins size" Arith.dc_stat_bins_size (Array.length bins);
+  (* Verify contexts are initialized *)
+  Alcotest.(check int) "DC bin 0 index" 0 bins.(0).Arith.index;
+  Alcotest.(check int) "DC bin 0 mps" 0 bins.(0).Arith.mps
 
 (** Test JPEG arithmetic AC stat bins *)
 let test_jpeg_arith_ac_bins () =
   let module Arith = Jpeg.Arithmetic in
-  (* Create AC stat bins *)
+  (* Create AC stat bins - now a flat array of 256 contexts *)
   let bins = Arith.create_ac_stat_bins () in
 
-  (* Verify all contexts are initialized *)
-  Alcotest.(check int) "AC se count" 63 (Array.length bins.Arith.ac_se);
-  Alcotest.(check int) "AC s0 count" 63 (Array.length bins.Arith.ac_s0);
-  Alcotest.(check int) "AC sign count" 63 (Array.length bins.Arith.ac_sign);
-  Alcotest.(check int) "AC sp count" 63 (Array.length bins.Arith.ac_sp);
-  Alcotest.(check int) "AC sn count" 63 (Array.length bins.Arith.ac_sn);
-  Alcotest.(check int) "AC x1 count" 63 (Array.length bins.Arith.ac_x1)
+  (* Verify flat array size *)
+  Alcotest.(check int) "AC bins size" Arith.ac_stat_bins_size (Array.length bins);
+  (* Verify contexts are initialized *)
+  Alcotest.(check int) "AC bin 0 index" 0 bins.(0).Arith.index;
+  Alcotest.(check int) "AC bin 0 mps" 0 bins.(0).Arith.mps
 
 (** Test JPEG arithmetic scan state initialization *)
 let test_jpeg_arith_scan_state () =
@@ -1065,8 +1063,8 @@ let test_jpeg_arith_reset () =
   (* Modify some state *)
   state.Arith.prev_dc.(0) <- 100;
   state.Arith.prev_dc.(1) <- -50;
-  state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index <- 5;
-  state.Arith.ac_bins.(0).Arith.ac_se.(0).Arith.index <- 10;
+  state.Arith.dc_bins.(0).(0).Arith.index <- 5;
+  state.Arith.ac_bins.(0).(0).Arith.index <- 10;
 
   (* Reset *)
   Arith.reset_arith_decoder state;
@@ -1075,9 +1073,9 @@ let test_jpeg_arith_reset () =
   Alcotest.(check int) "Prev DC 0 reset" 0 state.Arith.prev_dc.(0);
   Alcotest.(check int) "Prev DC 1 reset" 0 state.Arith.prev_dc.(1);
   Alcotest.(check int)
-    "DC s0 index reset" 0 state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index;
+    "DC bin 0 index reset" 0 state.Arith.dc_bins.(0).(0).Arith.index;
   Alcotest.(check int)
-    "AC se index reset" 0 state.Arith.ac_bins.(0).Arith.ac_se.(0).Arith.index
+    "AC bin 0 index reset" 0 state.Arith.ac_bins.(0).(0).Arith.index
 
 (** Test JPEG MQ-coder decode decision *)
 let test_jpeg_mq_decode () =
@@ -1399,7 +1397,7 @@ let test_jpeg_arith_encoder_reset () =
   (* Modify some state *)
   state.Arith.prev_dc.(0) <- 100;
   state.Arith.prev_dc.(1) <- -50;
-  state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index <- 5;
+  state.Arith.dc_bins.(0).(0).Arith.index <- 5;
 
   (* Reset *)
   Arith.reset_arith_encoder state;
@@ -1408,7 +1406,7 @@ let test_jpeg_arith_encoder_reset () =
   Alcotest.(check int) "Prev DC 0 reset" 0 state.Arith.prev_dc.(0);
   Alcotest.(check int) "Prev DC 1 reset" 0 state.Arith.prev_dc.(1);
   Alcotest.(check int)
-    "DC s0 index reset" 0 state.Arith.dc_bins.(0).Arith.dc_s0.Arith.index;
+    "DC bin 0 index reset" 0 state.Arith.dc_bins.(0).(0).Arith.index;
   Alcotest.(check int) "Encoder A reset" 0x10000 state.Arith.encoder.Arith.a
 
 (** Test JPEG arithmetic block encoding *)

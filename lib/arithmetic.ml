@@ -9,131 +9,135 @@
     estimate for the LPS (less probable symbol) scaled to 16 bits. *)
 let qm_table =
   [|
+    (* ITU-T T.81 Table D.3 / ISO 10918-1, matching libjpeg-turbo jaricom.c *)
+    (* Format: (Qe, NMPS, NLPS, Switch) *)
     (* Index 0-9 *)
-    (0x5A1D, 1, 1, 0);
-    (0x2586, 2, 6, 0);
-    (0x1114, 3, 9, 0);
-    (0x080B, 4, 12, 0);
-    (0x03D8, 5, 29, 0);
-    (0x01DA, 6, 33, 0);
-    (0x00E5, 7, 6, 1);
-    (0x006F, 8, 14, 0);
-    (0x0036, 9, 14, 0);
-    (0x001A, 10, 14, 0);
+    (0x5A1D,   1,   1, 1);
+    (0x2586,   2,  14, 0);
+    (0x1114,   3,  16, 0);
+    (0x080B,   4,  18, 0);
+    (0x03D8,   5,  20, 0);
+    (0x01DA,   6,  23, 0);
+    (0x00E5,   7,  25, 0);
+    (0x006F,   8,  28, 0);
+    (0x0036,   9,  30, 0);
+    (0x001A,  10,  33, 0);
     (* Index 10-19 *)
-    (0x000D, 11, 17, 0);
-    (0x0006, 12, 18, 0);
-    (0x0003, 13, 20, 0);
-    (0x0001, 13, 21, 0);
-    (0x5A7F, 15, 14, 1);
-    (0x3F25, 16, 14, 0);
-    (0x2CF2, 17, 15, 0);
-    (0x207C, 18, 16, 0);
-    (0x17B9, 19, 17, 0);
-    (0x1182, 20, 18, 0);
+    (0x000D,  11,  35, 0);
+    (0x0006,  12,   9, 0);
+    (0x0003,  13,  10, 0);
+    (0x0001,  13,  12, 0);
+    (0x5A7F,  15,  15, 1);
+    (0x3F25,  16,  36, 0);
+    (0x2CF2,  17,  38, 0);
+    (0x207C,  18,  39, 0);
+    (0x17B9,  19,  40, 0);
+    (0x1182,  20,  42, 0);
     (* Index 20-29 *)
-    (0x0CEF, 21, 19, 0);
-    (0x09A1, 22, 19, 0);
-    (0x072F, 23, 20, 0);
-    (0x055C, 24, 21, 0);
-    (0x0406, 25, 22, 0);
-    (0x0303, 26, 23, 0);
-    (0x0240, 27, 24, 0);
-    (0x01B1, 28, 25, 0);
-    (0x0144, 29, 26, 0);
-    (0x00F5, 30, 27, 0);
+    (0x0CEF,  21,  43, 0);
+    (0x09A1,  22,  45, 0);
+    (0x072F,  23,  46, 0);
+    (0x055C,  24,  48, 0);
+    (0x0406,  25,  49, 0);
+    (0x0303,  26,  51, 0);
+    (0x0240,  27,  52, 0);
+    (0x01B1,  28,  54, 0);
+    (0x0144,  29,  56, 0);
+    (0x00F5,  30,  57, 0);
     (* Index 30-39 *)
-    (0x00B7, 31, 28, 0);
-    (0x008A, 32, 29, 0);
-    (0x0068, 33, 30, 0);
-    (0x004E, 34, 31, 0);
-    (0x003B, 35, 32, 0);
-    (0x002C, 36, 33, 0);
-    (0x5AE1, 37, 34, 1);
-    (0x484C, 38, 35, 0);
-    (0x3A0D, 39, 36, 0);
-    (0x2EF1, 40, 37, 0);
+    (0x00B7,  31,  59, 0);
+    (0x008A,  32,  60, 0);
+    (0x0068,  33,  62, 0);
+    (0x004E,  34,  63, 0);
+    (0x003B,  35,  32, 0);
+    (0x002C,   9,  33, 0);
+    (0x5AE1,  37,  37, 1);
+    (0x484C,  38,  64, 0);
+    (0x3A0D,  39,  65, 0);
+    (0x2EF1,  40,  67, 0);
     (* Index 40-49 *)
-    (0x261F, 41, 38, 0);
-    (0x1F33, 42, 39, 0);
-    (0x19A8, 43, 40, 0);
-    (0x1518, 44, 41, 0);
-    (0x1177, 45, 42, 0);
-    (0x0E74, 46, 43, 0);
-    (0x0BFB, 47, 44, 0);
-    (0x09F8, 48, 45, 0);
-    (0x0861, 49, 46, 0);
-    (0x0706, 50, 47, 0);
+    (0x261F,  41,  68, 0);
+    (0x1F33,  42,  69, 0);
+    (0x19A8,  43,  70, 0);
+    (0x1518,  44,  72, 0);
+    (0x1177,  45,  73, 0);
+    (0x0E74,  46,  74, 0);
+    (0x0BFB,  47,  75, 0);
+    (0x09F8,  48,  77, 0);
+    (0x0861,  49,  78, 0);
+    (0x0706,  50,  79, 0);
     (* Index 50-59 *)
-    (0x05CD, 51, 48, 0);
-    (0x04DE, 52, 49, 0);
-    (0x040F, 53, 50, 0);
-    (0x0363, 54, 51, 0);
-    (0x02D4, 55, 52, 0);
-    (0x025C, 56, 53, 0);
-    (0x01F8, 57, 54, 0);
-    (0x01A4, 58, 55, 0);
-    (0x0160, 59, 56, 0);
-    (0x0125, 60, 57, 0);
+    (0x05CD,  51,  48, 0);
+    (0x04DE,  52,  50, 0);
+    (0x040F,  53,  50, 0);
+    (0x0363,  54,  51, 0);
+    (0x02D4,  55,  52, 0);
+    (0x025C,  56,  53, 0);
+    (0x01F8,  57,  54, 0);
+    (0x01A4,  58,  55, 0);
+    (0x0160,  59,  56, 0);
+    (0x0125,  60,  57, 0);
     (* Index 60-69 *)
-    (0x00F6, 61, 58, 0);
-    (0x00CB, 62, 59, 0);
-    (0x00AB, 63, 60, 0);
-    (0x008F, 64, 61, 0);
-    (0x0068, 65, 62, 0);
-    (0x004E, 66, 63, 0);
-    (0x003B, 67, 64, 0);
-    (0x002C, 67, 65, 0);
-    (0x5B12, 69, 66, 1);
-    (0x4D04, 70, 67, 0);
+    (0x00F6,  61,  58, 0);
+    (0x00CB,  62,  59, 0);
+    (0x00AB,  63,  61, 0);
+    (0x008F,  32,  61, 0);
+    (0x5B12,  65,  65, 1);
+    (0x4D04,  66,  80, 0);
+    (0x412C,  67,  81, 0);
+    (0x37D8,  68,  82, 0);
+    (0x2FE8,  69,  83, 0);
+    (0x293C,  70,  84, 0);
     (* Index 70-79 *)
-    (0x412C, 71, 68, 0);
-    (0x37D8, 72, 69, 0);
-    (0x2FE8, 73, 70, 0);
-    (0x293C, 74, 71, 0);
-    (0x2379, 75, 72, 0);
-    (0x1EDF, 76, 73, 0);
-    (0x1AA9, 77, 74, 0);
-    (0x174E, 78, 75, 0);
-    (0x1424, 79, 76, 0);
-    (0x119C, 80, 77, 0);
+    (0x2379,  71,  86, 0);
+    (0x1EDF,  72,  87, 0);
+    (0x1AA9,  73,  87, 0);
+    (0x174E,  74,  72, 0);
+    (0x1424,  75,  72, 0);
+    (0x119C,  76,  74, 0);
+    (0x0F6B,  77,  74, 0);
+    (0x0D51,  78,  75, 0);
+    (0x0BB6,  79,  77, 0);
+    (0x0A40,  48,  77, 0);
     (* Index 80-89 *)
-    (0x0F6B, 81, 78, 0);
-    (0x0D51, 82, 79, 0);
-    (0x0BB6, 83, 80, 0);
-    (0x0A40, 84, 81, 0);
-    (0x0861, 85, 82, 0);
-    (0x0706, 86, 83, 0);
-    (0x05CD, 87, 84, 0);
-    (0x04DE, 88, 85, 0);
-    (0x040F, 89, 86, 0);
-    (0x0363, 90, 87, 0);
+    (0x5832,  81,  80, 1);
+    (0x4D1C,  82,  88, 0);
+    (0x438E,  83,  89, 0);
+    (0x3BDD,  84,  90, 0);
+    (0x34EE,  85,  91, 0);
+    (0x2EAE,  86,  92, 0);
+    (0x299A,  87,  93, 0);
+    (0x2516,  71,  86, 0);
+    (0x5570,  89,  88, 1);
+    (0x4CA9,  90,  95, 0);
     (* Index 90-99 *)
-    (0x02D4, 91, 88, 0);
-    (0x025C, 92, 89, 0);
-    (0x01F8, 93, 90, 0);
-    (0x01A4, 94, 91, 0);
-    (0x0160, 95, 92, 0);
-    (0x0125, 96, 93, 0);
-    (0x00F6, 97, 94, 0);
-    (0x00CB, 98, 95, 0);
-    (0x00AB, 99, 96, 0);
-    (0x008F, 100, 97, 0);
+    (0x44D9,  91,  96, 0);
+    (0x3E22,  92,  97, 0);
+    (0x3824,  93,  99, 0);
+    (0x32B4,  94,  99, 0);
+    (0x2E17,  86,  93, 0);
+    (0x56A8,  96,  95, 1);
+    (0x4F46,  97, 101, 0);
+    (0x47E5,  98, 102, 0);
+    (0x41CF,  99, 103, 0);
+    (0x3C3D, 100, 104, 0);
     (* Index 100-109 *)
-    (0x0068, 101, 98, 0);
-    (0x004E, 102, 99, 0);
-    (0x003B, 103, 100, 0);
-    (0x002C, 103, 101, 0);
-    (0x0019, 105, 102, 0);
-    (0x0012, 106, 103, 0);
-    (0x000D, 107, 104, 0);
-    (0x0009, 108, 105, 0);
-    (0x0006, 109, 106, 0);
-    (0x0004, 110, 107, 0);
-    (* Index 110-112 *)
-    (0x0002, 111, 108, 0);
-    (0x0001, 112, 109, 0);
-    (0x0001, 112, 110, 0);
+    (0x375E,  93,  99, 0);
+    (0x5231, 102, 105, 0);
+    (0x4C0F, 103, 106, 0);
+    (0x4639, 104, 107, 0);
+    (0x415E,  99, 103, 0);
+    (0x5627, 106, 105, 1);
+    (0x50E7, 107, 108, 0);
+    (0x4B85, 103, 109, 0);
+    (0x5597, 109, 110, 0);
+    (0x504F, 107, 111, 0);
+    (* Index 110-113 *)
+    (0x5A10, 111, 110, 1);
+    (0x5522, 109, 112, 0);
+    (0x59EB, 111, 112, 1);
+    (* Index 113: Fixed probability 0.5 per ITU-T T.851 Section 10.3 *)
+    (0x5A1D, 113, 113, 0);
   |]
 
 (** Get Qe value for state *)
@@ -313,170 +317,174 @@ let init_jpeg_decoder_from_reader reader =
   init_jpeg_decoder remaining
 
 (* ============================================================================
-   JPEG DC/AC Coefficient Decoding (ITU-T T.81 Annex F.1.4)
+   JPEG DC/AC Coefficient Coding (ITU-T T.81 Annex F.1.4)
 
-   DC and AC coefficients use specific coding procedures with multiple
-   context bins based on previous values and coefficient positions.
+   Flat bin layout matching libjpeg-turbo (jcarith.c / jdarith.c):
+   - DC: 64 contexts per table, indexed by dc_context + offset
+   - AC: 256 contexts per table, with 3 bins per coefficient position
+   - Fixed bin at state 113 for sign bits and refinement (0.5 probability)
    ============================================================================ *)
 
-type dc_stat_bins = {
-  dc_s0 : context; (* Zero/non-zero decision *)
-  dc_sign : context; (* Sign decision *)
-  dc_sp : context array; (* Positive magnitude bins (5 bins) *)
-  dc_sn : context array; (* Negative magnitude bins (5 bins) *)
-  dc_x1 : context; (* LSB extension *)
-  dc_x2 : context; (* V continuation *)
-}
-(** Statistical area for DC (per component, based on conditioning value L) *)
+let dc_stat_bins_size = 64
+let ac_stat_bins_size = 256
 
-(** Create DC statistical bins for one component *)
+type dc_stat_bins = context array
+(** DC statistics: flat array of 64 contexts matching libjpeg DC_STAT_BINS *)
+
+type ac_stat_bins = context array
+(** AC statistics: flat array of 256 contexts matching libjpeg AC_STAT_BINS *)
+
 let create_dc_stat_bins () =
-  {
-    dc_s0 = create_context ();
-    dc_sign = create_context ();
-    dc_sp = Array.init 5 (fun _ -> create_context ());
-    dc_sn = Array.init 5 (fun _ -> create_context ());
-    dc_x1 = create_context ();
-    dc_x2 = create_context ();
-  }
+  Array.init dc_stat_bins_size (fun _ -> create_context ())
 
-type ac_stat_bins = {
-  ac_se : context array; (* EOB decision bins (63 bins for k=1..63) *)
-  ac_s0 : context array; (* Zero/non-zero (63 bins) *)
-  ac_sign : context array; (* Sign (63 bins) *)
-  ac_sp : context array; (* Positive magnitude *)
-  ac_sn : context array; (* Negative magnitude *)
-  ac_x1 : context array; (* LSB extension *)
-  ac_x2 : context array; (* V extension *)
-}
-(** Statistical bins for AC coefficients *)
-
-(** Create AC statistical bins for one component *)
 let create_ac_stat_bins () =
-  {
-    ac_se = Array.init 63 (fun _ -> create_context ());
-    ac_s0 = Array.init 63 (fun _ -> create_context ());
-    ac_sign = Array.init 63 (fun _ -> create_context ());
-    ac_sp = Array.init 63 (fun _ -> create_context ());
-    ac_sn = Array.init 63 (fun _ -> create_context ());
-    ac_x1 = Array.init 63 (fun _ -> create_context ());
-    ac_x2 = Array.init 63 (fun _ -> create_context ());
-  }
+  Array.init ac_stat_bins_size (fun _ -> create_context ())
 
-(** Conditioning value L bounds the context bin selection. Default L=0 means use
-    standard context selection. *)
-let dc_context_bin l diff =
-  if l = 0 then
-    (* Standard: 5 bins based on magnitude *)
-    min 4 (abs diff)
-  else if
-    (* With conditioning: bins based on L threshold *)
-    abs diff <= l
-  then 0
-  else min 4 (((abs diff - l - 1) / (l + 1)) + 1)
+(** Fixed-probability context at state 113 (0.5 probability per T.851) *)
+let create_fixed_bin () = create_context_with_index 113
 
-(** Decode DC difference value (ITU-T T.81 F.1.4.4.1) *)
-let decode_dc_diff state bins prev_diff l =
-  (* Select context bin based on previous difference *)
-  let _ctx_bin = dc_context_bin l prev_diff in
+(** Decode DC difference value (matching libjpeg jdarith.c decode_mcu exactly)
 
-  (* S0: Is the difference zero? *)
-  let is_zero = decode_decision bins.dc_s0 state in
-  if is_zero = 0 then 0
+    DC bin layout (dc_stats[tbl]):
+    - [dc_context+0]: S0 (zero/nonzero)
+    - [dc_context+1]: SS (sign)
+    - [dc_context+2]: SP (positive magnitude extension)
+    - [dc_context+3]: SN (negative magnitude extension)
+    - [20..]: X1 (extended magnitude category bits)
+    - [st+14]: Magnitude bit pattern *)
+let decode_dc_diff state (bins : dc_stat_bins) dc_context l u =
+  let st = dc_context in
+
+  (* Figure F.4: Decode_DC_DIFF *)
+  let s0 = decode_decision bins.(st) state in
+  if s0 = 0 then (0, 0)  (* zero diff, dc_context becomes 0 *)
   else begin
-    (* Sign bit *)
-    let sign = decode_decision bins.dc_sign state in
-    let sign_ctx = if sign = 0 then bins.dc_sp else bins.dc_sn in
-
-    (* Decode magnitude using categories *)
-    (* First, decode the category (number of bits needed) *)
-    let rec decode_category sz =
-      if sz >= 15 then sz (* Max category *)
-      else begin
-        let continue = decode_decision sign_ctx.(min sz 4) state in
-        if continue = 0 then sz else decode_category (sz + 1)
-      end
-    in
-    let category = decode_category 1 in
-
-    (* Decode the magnitude bits *)
-    let magnitude =
-      if category <= 1 then 1
-      else begin
-        (* First bit is always 1 (implicit) *)
-        let rec decode_bits acc remaining =
-          if remaining <= 0 then acc
-          else begin
-            let bit = decode_decision bins.dc_x1 state in
-            decode_bits ((acc lsl 1) lor bit) (remaining - 1)
-          end
-        in
-        (* Decode category-1 additional bits *)
-        let extra_bits = decode_bits 0 (category - 1) in
-        (1 lsl (category - 1)) + extra_bits
-      end
+    (* Figure F.7: Decode sign *)
+    let sign = decode_decision bins.(st + 1) state in
+    let st_mag, new_dc_ctx =
+      if sign = 0 then (st + 2, 4)   (* positive: SP, small positive category *)
+      else (st + 3, 8)               (* negative: SN, small negative category *)
     in
 
-    if sign = 0 then magnitude else -magnitude
+    (* Figure F.23: Decode magnitude category *)
+    let m = ref 0 in
+    let st_ref = ref st_mag in
+    (* First category bit from SP or SN context *)
+    m := decode_decision bins.(!st_ref) state;
+    if !m <> 0 then begin
+      (* Magnitude > 1: switch to X1 context *)
+      st_ref := 20;
+      while decode_decision bins.(!st_ref) state <> 0 do
+        m := !m lsl 1;
+        st_ref := !st_ref + 1
+      done
+    end;
+
+    (* Figure F.24: Decode magnitude bit pattern *)
+    let v = ref !m in  (* v starts at m, matching libjpeg's v = m *)
+    st_ref := !st_ref + 14;
+    let m2 = ref !m in
+    while !m2 lsr 1 <> 0 do
+      m2 := !m2 lsr 1;
+      if decode_decision bins.(!st_ref) state <> 0 then
+        v := !v lor !m2
+    done;
+
+    (* Reconstruct value: magnitude = v + 1 *)
+    let magnitude = !v + 1 in
+
+    (* Conditioning category update *)
+    let final_dc_ctx =
+      if !m < (1 lsl l) lsr 1 then 0
+      else if !m > (1 lsl u) lsr 1 then new_dc_ctx + 8
+      else new_dc_ctx
+    in
+
+    let diff = if sign = 0 then magnitude else -magnitude in
+    (diff, final_dc_ctx)
   end
 
-(** Decode AC coefficients for a block (ITU-T T.81 F.1.4.4.2) *)
-let decode_ac_block state bins _kx =
+(** Decode AC coefficients (matching libjpeg jdarith.c decode_mcu exactly)
+
+    AC bin layout (ac_stats[tbl]):
+    - [3*k+0]: EOB decision at position k
+    - [3*k+1]: Zero/nonzero at position k
+    - [3*k+2]: SX (magnitude extension)
+    - [189]: X1 for k <= Kx
+    - [217]: X1 for k > Kx
+    - [st+14]: Magnitude bit pattern
+    Sign uses fixed_bin (state 113). *)
+let decode_ac_block state (bins : ac_stat_bins) fixed_bin kx =
   let coeffs = Array.make 64 0 in
+
+  (* Figure F.5: Decode_AC_Coefficients - matching jdarith.c decode_mcu *)
   let k = ref 1 in
-  (* Start at position 1 (DC is position 0) *)
+  let outer_done = ref false in
+  while not !outer_done && !k <= 63 do
+    let st = ref (3 * !k) in
 
-  while !k <= 63 do
-    let ki = !k - 1 in
-    (* 0-based index for bins *)
-
-    (* SE: End of block decision *)
-    let eob = decode_decision bins.ac_se.(ki) state in
-    if eob = 1 then k := 64 (* Exit loop - rest are zeros *)
+    (* EOB decision at 3*k *)
+    let eob = decode_decision bins.(!st) state in
+    if eob <> 0 then
+      outer_done := true  (* All remaining coefficients are zero *)
     else begin
-      (* S0: Is this coefficient zero? *)
-      let is_zero = decode_decision bins.ac_s0.(ki) state in
-      if is_zero = 0 then begin
-        (* Zero coefficient, move to next *)
-        incr k
-      end
-      else begin
-        (* Non-zero coefficient *)
-        (* Sign bit *)
-        let sign = decode_decision bins.ac_sign.(ki) state in
-        let mag_ctx = if sign = 0 then bins.ac_sp.(ki) else bins.ac_sn.(ki) in
+      let inner_done = ref false in
+      while not !inner_done do
+        (* Zero/nonzero decision at 3*k+1 *)
+        let nz = decode_decision bins.(!st + 1) state in
+        if nz <> 0 then begin
+          (* Nonzero coefficient *)
+          let sign = decode_decision fixed_bin state in
 
-        (* Decode magnitude category via unary coding.
-           Kx only affects context selection per the spec, not the max category.
-           The hard limit is 15, matching the encoder. *)
-        let rec decode_category sz =
-          if sz >= 15 then sz
+          (* Decode magnitude category *)
+          let st2 = ref (!st + 2) in
+          let m = ref (decode_decision bins.(!st2) state) in
+          if !m <> 0 then begin
+            if decode_decision bins.(!st2) state <> 0 then begin
+              m := 2;
+              st2 := if !k <= kx then 189 else 217;
+              let cat_done = ref false in
+              while not !cat_done do
+                if decode_decision bins.(!st2) state <> 0 then begin
+                  if !m lsl 1 = 0x8000 then cat_done := true
+                  else begin m := !m lsl 1; st2 := !st2 + 1 end
+                end
+                else cat_done := true
+              done
+            end
+          end;
+
+          (* Figure F.24: Decode magnitude bit pattern *)
+          let v = ref !m in  (* v starts at m, matching libjpeg *)
+          st2 := !st2 + 14;
+          let m2 = ref !m in
+          while !m2 lsr 1 <> 0 do
+            m2 := !m2 lsr 1;
+            if decode_decision bins.(!st2) state <> 0 then
+              v := !v lor !m2
+          done;
+          let magnitude = !v + 1 in
+          coeffs.(!k) <- (if sign <> 0 then -magnitude else magnitude);
+          inner_done := true;
+          (* Outer loop will increment k *)
+        end
+        else begin
+          (* Zero coefficient - advance to next position *)
+          k := !k + 1;
+          if !k > 63 then
+            inner_done := true
           else begin
-            let continue = decode_decision mag_ctx state in
-            if continue = 0 then sz else decode_category (sz + 1)
+            st := 3 * !k;
+            (* EOB test at new position *)
+            if decode_decision bins.(!st) state <> 0 then begin
+              inner_done := true;
+              outer_done := true
+            end
+            (* else: not EOB, continue inner loop *)
           end
-        in
-        let category = decode_category 1 in
-
-        (* Decode magnitude bits *)
-        let magnitude =
-          if category <= 1 then 1
-          else begin
-            let rec decode_bits acc remaining =
-              if remaining <= 0 then acc
-              else begin
-                let bit = decode_decision bins.ac_x1.(ki) state in
-                decode_bits ((acc lsl 1) lor bit) (remaining - 1)
-              end
-            in
-            let extra = decode_bits 0 (category - 1) in
-            (1 lsl (category - 1)) + extra
-          end
-        in
-
-        coeffs.(!k) <- (if sign = 0 then magnitude else -magnitude);
-        incr k
-      end
+        end
+      done;
+      k := !k + 1
     end
   done;
 
@@ -490,9 +498,12 @@ type arith_scan_state = {
   decoder : jpeg_decoder_state;
   dc_bins : dc_stat_bins array; (* Per component *)
   ac_bins : ac_stat_bins array; (* Per component *)
+  fixed_bin : context;          (* Fixed 0.5 probability for sign/refinement *)
   prev_dc : int array; (* Previous DC values per component *)
-  l : int array; (* DC conditioning values per component *)
-  kx : int array; (* AC conditioning values per component *)
+  dc_context : int array; (* DC conditioning category per component *)
+  l : int array; (* DC conditioning L values per component *)
+  u : int array; (* DC conditioning U values per component *)
+  kx : int array; (* AC conditioning Kx values per component *)
 }
 (** Arithmetic decoding state for a full scan *)
 
@@ -502,16 +513,20 @@ let init_arith_scan_decoder data num_components =
     decoder = init_jpeg_decoder data;
     dc_bins = Array.init num_components (fun _ -> create_dc_stat_bins ());
     ac_bins = Array.init num_components (fun _ -> create_ac_stat_bins ());
+    fixed_bin = create_fixed_bin ();
     prev_dc = Array.make num_components 0;
+    dc_context = Array.make num_components 0;
     l = Array.make num_components 0;
-    (* Default conditioning *)
+    u = Array.make num_components 1;
     kx = Array.make num_components 5;
-    (* Default Kx = 5 *)
   }
 
 (** Set conditioning values from DAC markers *)
 let set_conditioning state component_idx is_dc value =
-  if is_dc then state.l.(component_idx) <- value
+  if is_dc then begin
+    state.l.(component_idx) <- value;
+    state.u.(component_idx) <- value + 1
+  end
   else state.kx.(component_idx) <- value
 
 (** Decode a single 8x8 block with arithmetic coding *)
@@ -519,84 +534,36 @@ let decode_arith_block state component_idx =
   let dc_bins = state.dc_bins.(component_idx) in
   let ac_bins = state.ac_bins.(component_idx) in
   let l = state.l.(component_idx) in
+  let u = state.u.(component_idx) in
   let kx = state.kx.(component_idx) in
+  let dc_ctx = state.dc_context.(component_idx) in
 
   (* Decode DC difference *)
   let prev_dc = state.prev_dc.(component_idx) in
-  let dc_diff = decode_dc_diff state.decoder dc_bins prev_dc l in
+  let dc_diff, new_dc_ctx = decode_dc_diff state.decoder dc_bins dc_ctx l u in
   let dc_value = prev_dc + dc_diff in
   state.prev_dc.(component_idx) <- dc_value;
+  state.dc_context.(component_idx) <- new_dc_ctx;
 
   (* Decode AC coefficients *)
-  let coeffs = decode_ac_block state.decoder ac_bins kx in
+  let coeffs = decode_ac_block state.decoder ac_bins state.fixed_bin kx in
   coeffs.(0) <- dc_value;
 
   coeffs
+
+(** Reset all contexts in a flat bin array *)
+let reset_bins bins =
+  Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins
 
 (** Reset decoder state at restart marker *)
 let reset_arith_decoder state =
   (* Reset DC predictors *)
   Array.fill state.prev_dc 0 (Array.length state.prev_dc) 0;
+  (* Reset DC conditioning contexts *)
+  Array.fill state.dc_context 0 (Array.length state.dc_context) 0;
   (* Reset statistical bins to initial state *)
-  Array.iter
-    (fun bins ->
-      bins.dc_s0.index <- 0;
-      bins.dc_s0.mps <- 0;
-      bins.dc_sign.index <- 0;
-      bins.dc_sign.mps <- 0;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.dc_sp;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.dc_sn;
-      bins.dc_x1.index <- 0;
-      bins.dc_x1.mps <- 0;
-      bins.dc_x2.index <- 0;
-      bins.dc_x2.mps <- 0)
-    state.dc_bins;
-  Array.iter
-    (fun bins ->
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_se;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_s0;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_sign;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_sp;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_sn;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_x1;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_x2)
-    state.ac_bins
+  Array.iter reset_bins state.dc_bins;
+  Array.iter reset_bins state.ac_bins
 
 (* ============================================================================
    JPEG MQ-Coder Encoder (ITU-T T.81 Annex D)
@@ -610,6 +577,7 @@ type jpeg_encoder_state = {
   mutable c : int; (* Code register, 32-bit *)
   mutable ct : int; (* Bit counter for byte output *)
   mutable st : int; (* Stack count for 0xFF bytes *)
+  mutable zc : int; (* Zero count for deferred 0x00 bytes *)
   mutable bp : int; (* Last byte output position *)
   mutable buffer : int; (* Byte buffer for output *)
   mutable output : bytes; (* Output buffer *)
@@ -631,77 +599,64 @@ let ensure_capacity state needed =
 (* Debug flag for tracing - set to true to enable *)
 let debug_byteout = ref false
 
-(** Output a byte with byte stuffing (BYTEOUT procedure from T.81 D.1.5)
+(** Output a raw byte to the output buffer *)
+let emit_byte state b =
+  ensure_capacity state 1;
+  Bytes.set_uint8 state.output state.output_pos (b land 0xFF);
+  state.output_pos <- state.output_pos + 1
 
-    This implements the "modification for efficiency" version that uses
-    stacked 0xFF bytes (ST) to defer carry propagation.
+(** Byte output procedure (BYTEOUT from T.81 D.1.5, with Pacman zero suppression)
 
-    Per ITU-T T.81:
-    - B is the buffer holding the previous byte (0x00-0xFF)
-    - ST counts stacked 0xFF bytes awaiting carry resolution
-    - When carry occurs (Temp > 0xFF), we increment B by exactly 1
-    - If B becomes 0xFF after increment, we stack it
-    - Otherwise we output stacked 0xFFs (with stuffing) then output B
+    Implements libjpeg-turbo's byte output with three deferred-output variables:
+    - buffer: previously computed output byte (-1 = empty)
+    - st (SC): count of stacked 0xFF bytes awaiting carry resolution
+    - zc: count of deferred 0x00 bytes (Pacman optimization)
 *)
 let byteout state =
-  ensure_capacity state (2 * state.st + 4);
-
   if !debug_byteout then
-    Printf.printf "byteout enter: c=0x%08x ct=%d st=%d bp=%d buffer=0x%x output_pos=%d\n"
-      state.c state.ct state.st state.bp state.buffer state.output_pos;
+    Printf.printf "byteout enter: c=0x%08x ct=%d st=%d zc=%d bp=%d buffer=0x%x output_pos=%d\n"
+      state.c state.ct state.st state.zc state.bp state.buffer state.output_pos;
 
   (* Extract byte from bits 19-26 of C *)
   let temp = state.c lsr 19 in
 
   if temp > 0xFF then begin
-    (* Carry occurred - propagate through stacked 0xFF bytes.
-       Each stacked 0xFF + carry = 0x100: output 0x00, carry propagates.
-       Buffer gets incremented by the final carry.
-       Order: buffer+1 first, then carried zero bytes. *)
+    (* Carry path: propagate carry into buffer and stacked bytes *)
     if state.buffer >= 0 then begin
-      let new_buffer = state.buffer + 1 in
-      (* Output buffer+1 (carry applied) *)
-      Bytes.set_uint8 state.output state.output_pos new_buffer;
-      state.output_pos <- state.output_pos + 1;
-      (* If buffer+1 = 0xFF, add stuff byte *)
-      if new_buffer = 0xFF then begin
-        Bytes.set_uint8 state.output state.output_pos 0x00;
-        state.output_pos <- state.output_pos + 1
-      end;
-      (* Output stacked 0xFF bytes that became 0x00 from carry *)
-      while state.st > 0 do
-        Bytes.set_uint8 state.output state.output_pos 0x00;
-        state.output_pos <- state.output_pos + 1;
-        state.st <- state.st - 1
-      done
+      (* Flush deferred zero bytes *)
+      while state.zc > 0 do emit_byte state 0x00; state.zc <- state.zc - 1 done;
+      (* Output buffer + 1 (carry absorbed) *)
+      emit_byte state (state.buffer + 1);
+      if state.buffer + 1 = 0xFF then emit_byte state 0x00
     end;
+    (* Stacked 0xFF bytes + carry become 0x00: defer them *)
+    state.zc <- state.zc + state.st;
+    state.st <- 0;
     state.buffer <- temp land 0xFF
   end
   else if temp = 0xFF then begin
-    (* Stack 0xFF byte (might overflow later from carry) *)
+    (* Stack path: defer 0xFF byte *)
     state.st <- state.st + 1
   end
   else begin
-    (* No carry possible - safe to output everything *)
-    if state.buffer >= 0 then begin
-      (* Output buffer byte *)
-      Bytes.set_uint8 state.output state.output_pos state.buffer;
-      state.output_pos <- state.output_pos + 1;
-      (* If buffer was 0xFF, add stuff byte *)
-      if state.buffer = 0xFF then begin
-        Bytes.set_uint8 state.output state.output_pos 0x00;
-        state.output_pos <- state.output_pos + 1
-      end
+    (* Normal path: flush buffer and stacked bytes *)
+    if state.buffer = 0 then
+      (* Defer zero buffer byte *)
+      state.zc <- state.zc + 1
+    else if state.buffer >= 0 then begin
+      (* Flush deferred zeros, then output buffer *)
+      while state.zc > 0 do emit_byte state 0x00; state.zc <- state.zc - 1 done;
+      emit_byte state state.buffer
     end;
     (* Output stacked 0xFF bytes with stuffing *)
-    while state.st > 0 do
-      Bytes.set_uint8 state.output state.output_pos 0xFF;
-      state.output_pos <- state.output_pos + 1;
-      Bytes.set_uint8 state.output state.output_pos 0x00;
-      state.output_pos <- state.output_pos + 1;
-      state.st <- state.st - 1
-    done;
-    (* New buffer byte (might carry later) *)
+    if state.st > 0 then begin
+      while state.zc > 0 do emit_byte state 0x00; state.zc <- state.zc - 1 done;
+      while state.st > 0 do
+        emit_byte state 0xFF;
+        emit_byte state 0x00;
+        state.st <- state.st - 1
+      done
+    end;
     state.buffer <- temp land 0xFF
   end;
 
@@ -711,8 +666,8 @@ let byteout state =
   state.ct <- state.ct + 8;
 
   if !debug_byteout then
-    Printf.printf "byteout exit: c=0x%08x buffer=0x%x st=%d ct=%d output_pos=%d\n"
-      state.c state.buffer state.st state.ct state.output_pos
+    Printf.printf "byteout exit: c=0x%08x buffer=0x%x st=%d zc=%d ct=%d output_pos=%d\n"
+      state.c state.buffer state.st state.zc state.ct state.output_pos
 
 (** Initialize the JPEG arithmetic encoder (INITENC from T.81 D.1.4) *)
 let init_jpeg_encoder () =
@@ -726,6 +681,8 @@ let init_jpeg_encoder () =
     (* Counter - first byte will have 3 spacer bits *)
     st = 0;
     (* No stacked 0xFF bytes *)
+    zc = 0;
+    (* No deferred zero bytes *)
     bp = -1;
     (* No bytes output yet *)
     buffer = -1;
@@ -739,7 +696,7 @@ let init_jpeg_encoder () =
 let renorme state =
   while state.a < 0x8000 do
     state.a <- state.a lsl 1;
-    state.c <- (state.c lsl 1) land 0xFFFFFFFF;
+    state.c <- state.c lsl 1;
     state.ct <- state.ct - 1;
     if state.ct = 0 then byteout state
   done
@@ -787,150 +744,211 @@ let encode_decision ctx state d =
   (* Renormalize if needed *)
   if state.a < 0x8000 then renorme state
 
-(** Flush the encoder (FLUSH from T.81 D.1.8) *)
+(** Flush the encoder (libjpeg-turbo finish_pass with Pacman termination) *)
 let flush_jpeg_encoder state =
-  (* Helper to output a byte with stuffing *)
-  let output_flush_byte b =
-    ensure_capacity state 2;
-    Bytes.set_uint8 state.output state.output_pos b;
-    state.output_pos <- state.output_pos + 1;
-    if b = 0xFF then begin
-      Bytes.set_uint8 state.output state.output_pos 0x00;
-      state.output_pos <- state.output_pos + 1
+  (* Section D.1.8: Termination of encoding *)
+  (* Find the value in the coding interval with the largest number of
+     trailing zero bits (Pacman termination) *)
+  let temp = (state.a - 1 + state.c) land 0xFFFF0000 in
+  if temp < state.c then
+    state.c <- temp + 0x8000
+  else
+    state.c <- temp;
+
+  (* Shift C left by CT to align final bits *)
+  state.c <- state.c lsl state.ct;
+
+  (* Check for final carry (bits 27-31) *)
+  if state.c land 0xF8000000 <> 0 then begin
+    (* Carry path *)
+    if state.buffer >= 0 then begin
+      while state.zc > 0 do emit_byte state 0x00; state.zc <- state.zc - 1 done;
+      emit_byte state (state.buffer + 1);
+      if state.buffer + 1 = 0xFF then emit_byte state 0x00
+    end;
+    state.zc <- state.zc + state.st;
+    state.st <- 0
+  end
+  else begin
+    (* Normal path *)
+    if state.buffer = 0 then
+      state.zc <- state.zc + 1
+    else if state.buffer >= 0 then begin
+      while state.zc > 0 do emit_byte state 0x00; state.zc <- state.zc - 1 done;
+      emit_byte state state.buffer
+    end;
+    if state.st > 0 then begin
+      while state.zc > 0 do emit_byte state 0x00; state.zc <- state.zc - 1 done;
+      while state.st > 0 do
+        emit_byte state 0xFF;
+        emit_byte state 0x00;
+        state.st <- state.st - 1
+      done
     end
-  in
-
-  (* Shift C left by CT to position for final extraction *)
-  state.c <- (state.c lsl state.ct) land 0xFFFFFFFF;
-  state.ct <- 0;
-
-  (* Call byteout to extract a byte if needed *)
-  byteout state;
-
-  (* Output buffer if valid *)
-  if state.buffer >= 0 then begin
-    output_flush_byte state.buffer
   end;
 
-  (* Output stacked 0xFF bytes with stuffing *)
-  while state.st > 0 do
-    output_flush_byte 0xFF;
-    state.st <- state.st - 1
-  done;
-
-  (* Output remaining bytes from C register *)
-  (* After byteout, C has been masked to 19 bits and remaining data is there *)
-  let byte1 = (state.c lsr 11) land 0xFF in
-  let byte2 = (state.c lsr 3) land 0xFF in
-
-  (* Always output at least 2 bytes for decoder initialization *)
-  output_flush_byte byte1;
-  output_flush_byte byte2;
+  (* Output final bytes from C register, only if needed *)
+  if state.c land 0x7FFF800 <> 0 then begin
+    while state.zc > 0 do emit_byte state 0x00; state.zc <- state.zc - 1 done;
+    let b1 = (state.c lsr 19) land 0xFF in
+    emit_byte state b1;
+    if b1 = 0xFF then emit_byte state 0x00;
+    if state.c land 0x7F800 <> 0 then begin
+      let b2 = (state.c lsr 11) land 0xFF in
+      emit_byte state b2;
+      if b2 = 0xFF then emit_byte state 0x00
+    end
+  end;
 
   (* Return the output bytes *)
   Bytes.sub state.output 0 state.output_pos
 
-(** Encode DC difference value (ITU-T T.81 F.1.4.4.1) *)
-let encode_dc_diff state bins diff _l =
-  let mag = abs diff in
+(** Encode DC difference value (matching libjpeg jcarith.c encode_mcu exactly)
 
-  (* S0: Is the difference zero? *)
-  if mag = 0 then encode_decision bins.dc_s0 state 0
-  else begin
-    encode_decision bins.dc_s0 state 1;
+    Returns the new dc_context value for conditioning. *)
+let encode_dc_diff state (bins : dc_stat_bins) dc_context diff l u =
+  let st = dc_context in
 
-    (* Sign bit: 0 for positive, 1 for negative *)
-    let sign = if diff < 0 then 1 else 0 in
-    encode_decision bins.dc_sign state sign;
-
-    let sign_ctx = if sign = 0 then bins.dc_sp else bins.dc_sn in
-
-    (* Encode magnitude using categories *)
-    (* Category = number of bits needed to represent magnitude *)
-    (* Cat 1: 1, Cat 2: 2-3, Cat 3: 4-7, ..., Cat n: 2^(n-1) to 2^n - 1 *)
-    let rec find_category m cat =
-      if m = 0 then cat else find_category (m lsr 1) (cat + 1)
-    in
-    let category = find_category mag 0 in
-
-    (* Encode category using unary coding *)
-    for i = 1 to category - 1 do
-      encode_decision sign_ctx.(min i 4) state 1
-    done;
-    encode_decision sign_ctx.(min category 4) state 0;
-
-    (* Encode the magnitude bits if category > 1 *)
-    if category > 1 then begin
-      (* Encode category-1 bits of magnitude (MSB to LSB) *)
-      for i = category - 2 downto 0 do
-        let bit = (mag lsr i) land 1 in
-        encode_decision bins.dc_x1 state bit
-      done
-    end
+  (* Figure F.4: Encode_DC_DIFF *)
+  if diff = 0 then begin
+    encode_decision bins.(st) state 0;
+    0  (* dc_context = 0: zero diff category *)
   end
+  else begin
+    encode_decision bins.(st) state 1;
 
-(** Encode AC coefficients for a block (ITU-T T.81 F.1.4.4.2) *)
-let encode_ac_block state bins coeffs kx =
-  (* Find the last non-zero coefficient (end of block) *)
-  let se = ref 0 in
-  for k = 1 to 63 do
-    if coeffs.(k) <> 0 then se := k
-  done;
-
-  let k = ref 1 in
-  while !k <= 63 do
-    let ki = !k - 1 in
-    (* 0-based index for bins *)
-
-    if !k > !se then begin
-      (* SE: End of block - signal EOB *)
-      encode_decision bins.ac_se.(ki) state 1;
-      k := 64 (* Exit loop *)
-    end
-    else begin
-      (* SE: Not end of block *)
-      encode_decision bins.ac_se.(ki) state 0;
-
-      let coeff = coeffs.(!k) in
-      if coeff = 0 then begin
-        (* S0: Zero coefficient *)
-        encode_decision bins.ac_s0.(ki) state 0;
-        incr k
+    (* Figure F.7: Encoding the sign of v *)
+    let v, new_dc_ctx =
+      if diff > 0 then begin
+        encode_decision bins.(st + 1) state 0;  (* SS: positive *)
+        (diff, 4)  (* SP = st+2, small positive diff *)
       end
       else begin
-        (* S0: Non-zero coefficient *)
-        encode_decision bins.ac_s0.(ki) state 1;
-
-        (* Sign bit *)
-        let sign = if coeff < 0 then 1 else 0 in
-        encode_decision bins.ac_sign.(ki) state sign;
-
-        let mag_ctx = if sign = 0 then bins.ac_sp.(ki) else bins.ac_sn.(ki) in
-        let mag = abs coeff in
-
-        (* Encode magnitude category *)
-        let rec find_category m cat =
-          if m = 0 then cat else find_category (m lsr 1) (cat + 1)
-        in
-        let category = find_category mag 0 in
-        let category = min category (max 15 kx) in
-
-        (* Encode category using unary coding *)
-        for _ = 1 to category - 1 do
-          encode_decision mag_ctx state 1
-        done;
-        encode_decision mag_ctx state 0;
-
-        (* Encode magnitude bits if category > 1 *)
-        if category > 1 then begin
-          for i = category - 2 downto 0 do
-            let bit = (mag lsr i) land 1 in
-            encode_decision bins.ac_x1.(ki) state bit
-          done
-        end;
-
-        incr k
+        encode_decision bins.(st + 1) state 1;  (* SS: negative *)
+        (-diff, 8)  (* SN = st+3, small negative diff *)
       end
+    in
+    let st_mag = if diff > 0 then st + 2 else st + 3 in
+
+    (* Figure F.8: Encoding the magnitude category of v *)
+    let m = ref 0 in
+    let st_ref = ref st_mag in
+    let v_minus_1 = v - 1 in
+    if v_minus_1 <> 0 then begin
+      encode_decision bins.(!st_ref) state 1;
+      m := 1;
+      let v2 = ref v_minus_1 in
+      st_ref := 20;  (* X1 *)
+      while !v2 lsr 1 <> 0 do
+        v2 := !v2 lsr 1;
+        encode_decision bins.(!st_ref) state 1;
+        m := !m lsl 1;
+        st_ref := !st_ref + 1
+      done
+    end;
+    encode_decision bins.(!st_ref) state 0;  (* End of category *)
+
+    (* Section F.1.4.4.1.2: Establish dc_context conditioning category *)
+    let final_dc_ctx =
+      if !m < (1 lsl l) lsr 1 then 0
+      else if !m > (1 lsl u) lsr 1 then new_dc_ctx + 8
+      else new_dc_ctx
+    in
+
+    (* Figure F.9: Encoding the magnitude bit pattern of v *)
+    let st_bits = !st_ref + 14 in
+    let m2 = ref !m in
+    while !m2 lsr 1 <> 0 do
+      m2 := !m2 lsr 1;
+      let bit = if !m2 land v_minus_1 <> 0 then 1 else 0 in
+      encode_decision bins.(st_bits) state bit
+    done;
+
+    final_dc_ctx
+  end
+
+(** Encode AC coefficients for a block (matching libjpeg jcarith.c encode_mcu) *)
+let encode_ac_block state (bins : ac_stat_bins) fixed_bin coeffs kx =
+  (* Find the last non-zero coefficient (EOB index) *)
+  let ke = ref 0 in
+  for i = 63 downto 1 do
+    if !ke = 0 && coeffs.(i) <> 0 then ke := i
+  done;
+
+  (* Figure F.5: Encode_AC_Coefficients - matching jcarith.c encode_mcu *)
+  let k = ref 1 in
+  let outer_done = ref false in
+  while not !outer_done && !k <= 63 do
+    let st = ref (3 * !k) in
+    if !k > !ke then begin
+      (* Figure F.6: Encode EOB *)
+      encode_decision bins.(!st) state 1;
+      outer_done := true
+    end
+    else begin
+      encode_decision bins.(!st) state 0;  (* Not EOB *)
+      let inner_done = ref false in
+      while not !inner_done do
+        let v = coeffs.(!k) in
+        if v <> 0 then begin
+          encode_decision bins.(!st + 1) state 1;  (* Nonzero *)
+          (* Sign *)
+          let sign = if v < 0 then 1 else 0 in
+          encode_decision fixed_bin state sign;
+          (* Magnitude category *)
+          let st2 = ref (!st + 2) in
+          let abs_v = abs v in
+          let m = ref 0 in
+          let v_minus_1 = abs_v - 1 in
+          if v_minus_1 <> 0 then begin
+            encode_decision bins.(!st2) state 1;
+            m := 1;
+            let v2 = ref v_minus_1 in
+            if !v2 lsr 1 <> 0 then begin
+              v2 := !v2 lsr 1;
+              encode_decision bins.(!st2) state 1;
+              m := !m lsl 1;
+              st2 := if !k <= kx then 189 else 217;
+              while !v2 lsr 1 <> 0 do
+                v2 := !v2 lsr 1;
+                encode_decision bins.(!st2) state 1;
+                m := !m lsl 1;
+                st2 := !st2 + 1
+              done
+            end
+          end;
+          encode_decision bins.(!st2) state 0;  (* End of category *)
+          (* Magnitude bit pattern *)
+          st2 := !st2 + 14;
+          let m2 = ref !m in
+          while !m2 lsr 1 <> 0 do
+            m2 := !m2 lsr 1;
+            let bit = if !m2 land v_minus_1 <> 0 then 1 else 0 in
+            encode_decision bins.(!st2) state bit
+          done;
+          inner_done := true
+          (* Outer loop will increment k *)
+        end
+        else begin
+          encode_decision bins.(!st + 1) state 0;  (* Zero *)
+          k := !k + 1;
+          if !k > 63 then begin
+            inner_done := true;
+            outer_done := true
+          end
+          else begin
+            st := 3 * !k;
+            if !k > !ke then begin
+              encode_decision bins.(!st) state 1;  (* EOB *)
+              inner_done := true;
+              outer_done := true
+            end
+            else
+              encode_decision bins.(!st) state 0  (* Not EOB *)
+          end
+        end
+      done;
+      k := !k + 1
     end
   done
 
@@ -942,9 +960,12 @@ type arith_encode_scan_state = {
   encoder : jpeg_encoder_state;
   dc_bins : dc_stat_bins array; (* Per component *)
   ac_bins : ac_stat_bins array; (* Per component *)
+  fixed_bin : context;          (* Fixed 0.5 probability for sign/refinement *)
   prev_dc : int array; (* Previous DC values per component *)
-  l : int array; (* DC conditioning values per component *)
-  kx : int array; (* AC conditioning values per component *)
+  dc_context : int array; (* DC conditioning category per component *)
+  l : int array; (* DC conditioning L values per component *)
+  u : int array; (* DC conditioning U values per component *)
+  kx : int array; (* AC conditioning Kx values per component *)
 }
 (** Arithmetic encoding state for a full scan *)
 
@@ -954,16 +975,20 @@ let init_arith_scan_encoder num_components =
     encoder = init_jpeg_encoder ();
     dc_bins = Array.init num_components (fun _ -> create_dc_stat_bins ());
     ac_bins = Array.init num_components (fun _ -> create_ac_stat_bins ());
+    fixed_bin = create_fixed_bin ();
     prev_dc = Array.make num_components 0;
+    dc_context = Array.make num_components 0;
     l = Array.make num_components 0;
-    (* Default conditioning *)
+    u = Array.make num_components 1;
     kx = Array.make num_components 5;
-    (* Default Kx = 5 *)
   }
 
 (** Set encoder conditioning values *)
 let set_encoder_conditioning state component_idx is_dc value =
-  if is_dc then state.l.(component_idx) <- value
+  if is_dc then begin
+    state.l.(component_idx) <- value;
+    state.u.(component_idx) <- value + 1
+  end
   else state.kx.(component_idx) <- value
 
 (** Encode a single 8x8 block with arithmetic coding *)
@@ -971,25 +996,31 @@ let encode_arith_block state component_idx coeffs =
   let dc_bins = state.dc_bins.(component_idx) in
   let ac_bins = state.ac_bins.(component_idx) in
   let l = state.l.(component_idx) in
+  let u = state.u.(component_idx) in
   let kx = state.kx.(component_idx) in
+  let dc_ctx = state.dc_context.(component_idx) in
 
   (* Encode DC difference *)
   let prev_dc = state.prev_dc.(component_idx) in
   let dc_diff = coeffs.(0) - prev_dc in
-  encode_dc_diff state.encoder dc_bins dc_diff l;
+  let new_dc_ctx = encode_dc_diff state.encoder dc_bins dc_ctx dc_diff l u in
   state.prev_dc.(component_idx) <- coeffs.(0);
+  state.dc_context.(component_idx) <- new_dc_ctx;
 
   (* Encode AC coefficients *)
-  encode_ac_block state.encoder ac_bins coeffs kx
+  encode_ac_block state.encoder ac_bins state.fixed_bin coeffs kx
 
 (** Encode only the DC coefficient of a block (for progressive DC scans) *)
 let encode_arith_dc_only state component_idx dc_value =
   let dc_bins = state.dc_bins.(component_idx) in
   let l = state.l.(component_idx) in
+  let u = state.u.(component_idx) in
+  let dc_ctx = state.dc_context.(component_idx) in
   let prev_dc = state.prev_dc.(component_idx) in
   let dc_diff = dc_value - prev_dc in
-  encode_dc_diff state.encoder dc_bins dc_diff l;
-  state.prev_dc.(component_idx) <- dc_value
+  let new_dc_ctx = encode_dc_diff state.encoder dc_bins dc_ctx dc_diff l u in
+  state.prev_dc.(component_idx) <- dc_value;
+  state.dc_context.(component_idx) <- new_dc_ctx
 
 (** Encode AC coefficients in a spectral range (for progressive AC scans) *)
 let encode_arith_ac_only state component_idx coeffs ~ss ~se:scan_se =
@@ -997,143 +1028,105 @@ let encode_arith_ac_only state component_idx coeffs ~ss ~se:scan_se =
   let kx = state.kx.(component_idx) in
 
   (* Find the last non-zero coefficient in the spectral range *)
-  let last_nz = ref (ss - 1) in
-  for k = ss to scan_se do
-    if coeffs.(k) <> 0 then last_nz := k
+  let ke = ref 0 in
+  for i = scan_se downto ss do
+    if !ke = 0 && coeffs.(i) <> 0 then ke := i
   done;
 
+  (* Matching jcarith.c encode_mcu_AC_first structure with 3*k indexing *)
   let k = ref ss in
-  while !k <= scan_se do
-    let ki = !k - 1 in
-
-    if !k > !last_nz then begin
-      (* SE: End of block - signal EOB *)
-      encode_decision ac_bins.ac_se.(ki) state.encoder 1;
-      k := scan_se + 1
+  let outer_done = ref false in
+  while not !outer_done && !k <= scan_se do
+    let st = ref (3 * !k) in
+    if !k > !ke then begin
+      encode_decision ac_bins.(!st) state.encoder 1;  (* EOB *)
+      outer_done := true
     end
     else begin
-      encode_decision ac_bins.ac_se.(ki) state.encoder 0;
-
-      let coeff = coeffs.(!k) in
-      if coeff = 0 then begin
-        encode_decision ac_bins.ac_s0.(ki) state.encoder 0;
-        incr k
-      end
-      else begin
-        encode_decision ac_bins.ac_s0.(ki) state.encoder 1;
-
-        let sign = if coeff < 0 then 1 else 0 in
-        encode_decision ac_bins.ac_sign.(ki) state.encoder sign;
-
-        let mag_ctx = if sign = 0 then ac_bins.ac_sp.(ki) else ac_bins.ac_sn.(ki) in
-        let mag = abs coeff in
-
-        let rec find_category m cat =
-          if m = 0 then cat else find_category (m lsr 1) (cat + 1)
-        in
-        let category = find_category mag 0 in
-        let category = min category (max 15 kx) in
-
-        for _ = 1 to category - 1 do
-          encode_decision mag_ctx state.encoder 1
-        done;
-        encode_decision mag_ctx state.encoder 0;
-
-        if category > 1 then begin
-          for i = category - 2 downto 0 do
-            let bit = (mag lsr i) land 1 in
-            encode_decision ac_bins.ac_x1.(ki) state.encoder bit
-          done
-        end;
-
-        incr k
-      end
+      encode_decision ac_bins.(!st) state.encoder 0;  (* Not EOB *)
+      let inner_done = ref false in
+      while not !inner_done do
+        let v = coeffs.(!k) in
+        if v <> 0 then begin
+          encode_decision ac_bins.(!st + 1) state.encoder 1;  (* Nonzero *)
+          let sign = if v < 0 then 1 else 0 in
+          encode_decision state.fixed_bin state.encoder sign;
+          let st2 = ref (!st + 2) in
+          let abs_v = abs v in
+          let m = ref 0 in
+          let v_minus_1 = abs_v - 1 in
+          if v_minus_1 <> 0 then begin
+            encode_decision ac_bins.(!st2) state.encoder 1;
+            m := 1;
+            let v2 = ref v_minus_1 in
+            if !v2 lsr 1 <> 0 then begin
+              v2 := !v2 lsr 1;
+              encode_decision ac_bins.(!st2) state.encoder 1;
+              m := !m lsl 1;
+              st2 := if !k <= kx then 189 else 217;
+              while !v2 lsr 1 <> 0 do
+                v2 := !v2 lsr 1;
+                encode_decision ac_bins.(!st2) state.encoder 1;
+                m := !m lsl 1;
+                st2 := !st2 + 1
+              done
+            end
+          end;
+          encode_decision ac_bins.(!st2) state.encoder 0;
+          st2 := !st2 + 14;
+          let m2 = ref !m in
+          while !m2 lsr 1 <> 0 do
+            m2 := !m2 lsr 1;
+            let bit = if !m2 land v_minus_1 <> 0 then 1 else 0 in
+            encode_decision ac_bins.(!st2) state.encoder bit
+          done;
+          inner_done := true
+        end
+        else begin
+          encode_decision ac_bins.(!st + 1) state.encoder 0;  (* Zero *)
+          k := !k + 1;
+          if !k > scan_se then begin
+            inner_done := true;
+            outer_done := true
+          end
+          else begin
+            st := 3 * !k;
+            if !k > !ke then begin
+              encode_decision ac_bins.(!st) state.encoder 1;  (* EOB *)
+              inner_done := true;
+              outer_done := true
+            end
+            else
+              encode_decision ac_bins.(!st) state.encoder 0  (* Not EOB *)
+          end
+        end
+      done;
+      k := !k + 1
     end
   done
 
-(** Encode a single prediction error for lossless JPEG.
-    Unlike encode_arith_block, this encodes the diff value directly
-    without computing a difference from prev_dc. The prev_dc is still
-    updated for statistical context purposes. *)
+(** Encode a single prediction error for lossless JPEG *)
 let encode_lossless_diff state component_idx diff =
   let dc_bins = state.dc_bins.(component_idx) in
   let l = state.l.(component_idx) in
+  let u = state.u.(component_idx) in
+  let dc_ctx = state.dc_context.(component_idx) in
 
-  (* Encode the prediction error directly *)
-  encode_dc_diff state.encoder dc_bins diff l;
-
-  (* Update prev_dc for statistical context (used for adaptive probability) *)
+  let new_dc_ctx = encode_dc_diff state.encoder dc_bins dc_ctx diff l u in
+  state.dc_context.(component_idx) <- new_dc_ctx;
   state.prev_dc.(component_idx) <- diff
 
 (** Reset encoder state at restart marker *)
 let reset_arith_encoder state =
-  (* Reset DC predictors *)
   Array.fill state.prev_dc 0 (Array.length state.prev_dc) 0;
-  (* Reset statistical bins to initial state *)
-  Array.iter
-    (fun bins ->
-      bins.dc_s0.index <- 0;
-      bins.dc_s0.mps <- 0;
-      bins.dc_sign.index <- 0;
-      bins.dc_sign.mps <- 0;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.dc_sp;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.dc_sn;
-      bins.dc_x1.index <- 0;
-      bins.dc_x1.mps <- 0;
-      bins.dc_x2.index <- 0;
-      bins.dc_x2.mps <- 0)
-    state.dc_bins;
-  Array.iter
-    (fun bins ->
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_se;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_s0;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_sign;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_sp;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_sn;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_x1;
-      Array.iter
-        (fun c ->
-          c.index <- 0;
-          c.mps <- 0)
-        bins.ac_x2)
-    state.ac_bins;
-  (* Re-initialize the encoder for the new segment *)
+  Array.fill state.dc_context 0 (Array.length state.dc_context) 0;
+  Array.iter reset_bins state.dc_bins;
+  Array.iter reset_bins state.ac_bins;
   state.encoder.a <- 0x10000;
   state.encoder.c <- 0;
   state.encoder.ct <- 11;
   state.encoder.st <- 0;
+  state.encoder.zc <- 0;
   state.encoder.buffer <- -1
 
 (** Flush encoder and return scan data *)

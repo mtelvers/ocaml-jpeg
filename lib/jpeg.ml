@@ -852,12 +852,15 @@ let decode_arith_dc_scan entropy_data frame scan state coefficients mcus_x
             let dc_bins = arith_state.Arithmetic.dc_bins.(sci) in
             let prev_dc = arith_state.Arithmetic.prev_dc.(sci) in
             let l = arith_state.Arithmetic.l.(sci) in
-            let dc_diff =
+            let u = arith_state.Arithmetic.u.(sci) in
+            let dc_ctx = arith_state.Arithmetic.dc_context.(sci) in
+            let dc_diff, new_dc_ctx =
               Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins
-                prev_dc l
+                dc_ctx l u
             in
             let dc_value = prev_dc + dc_diff in
             arith_state.Arithmetic.prev_dc.(sci) <- dc_value;
+            arith_state.Arithmetic.dc_context.(sci) <- new_dc_ctx;
 
             (* Apply successive approximation *)
             coefficients.(ci).(block_idx).(0) <- dc_value lsl al
@@ -915,77 +918,81 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
 
             (* Decode AC coefficients for this spectral range *)
             let ac_bins = arith_state.Arithmetic.ac_bins.(sci) in
-            let _kx = arith_state.Arithmetic.kx.(sci) in
+            let kx = arith_state.Arithmetic.kx.(sci) in
+            let fixed_bin = arith_state.Arithmetic.fixed_bin in
 
+            (* Matching jdarith.c decode_mcu_AC_first with 3*k indexing *)
             let k = ref ss in
-            while !k <= se do
-              let ki = !k - 1 in
-
-              (* SE: End of block decision *)
+            let scan_done = ref false in
+            while not !scan_done && !k <= se do
+              let st = ref (3 * !k) in
+              (* EOB decision *)
               let eob =
-                Arithmetic.decode_decision
-                  ac_bins.Arithmetic.ac_se.(ki)
+                Arithmetic.decode_decision ac_bins.(!st)
                   arith_state.Arithmetic.decoder
               in
-              if eob = 1 then k := se + 1 (* Exit loop *)
+              if eob <> 0 then scan_done := true
               else begin
-                (* S0: Is this coefficient zero? *)
-                let is_zero =
-                  Arithmetic.decode_decision
-                    ac_bins.Arithmetic.ac_s0.(ki)
-                    arith_state.Arithmetic.decoder
-                in
-                if is_zero = 0 then incr k
-                else begin
-                  (* Non-zero coefficient *)
-                  let sign =
-                    Arithmetic.decode_decision
-                      ac_bins.Arithmetic.ac_sign.(ki)
+                let inner_done = ref false in
+                while not !inner_done do
+                  let nz =
+                    Arithmetic.decode_decision ac_bins.(!st + 1)
                       arith_state.Arithmetic.decoder
                   in
-                  let mag_ctx =
-                    if sign = 0 then ac_bins.Arithmetic.ac_sp.(ki)
-                    else ac_bins.Arithmetic.ac_sn.(ki)
-                  in
-
-                  (* Decode magnitude category - kx only affects context
-                     selection, not the max category (hard limit is 15) *)
-                  let rec decode_category sz =
-                    if sz >= 15 then sz
+                  if nz <> 0 then begin
+                    (* Nonzero: decode sign using fixed bin *)
+                    let sign =
+                      Arithmetic.decode_decision fixed_bin
+                        arith_state.Arithmetic.decoder
+                    in
+                    let v = ref sign in
+                    (* Decode magnitude category *)
+                    let st2 = ref (!st + 2) in
+                    let m = ref (Arithmetic.decode_decision ac_bins.(!st2)
+                        arith_state.Arithmetic.decoder) in
+                    if !m <> 0 then begin
+                      if Arithmetic.decode_decision ac_bins.(!st2)
+                          arith_state.Arithmetic.decoder <> 0 then begin
+                        m := 2;
+                        st2 := if !k <= kx then 189 else 217;
+                        let cat_done = ref false in
+                        while not !cat_done do
+                          if Arithmetic.decode_decision ac_bins.(!st2)
+                              arith_state.Arithmetic.decoder <> 0 then begin
+                            m := !m lsl 1; st2 := !st2 + 1
+                          end
+                          else cat_done := true
+                        done
+                      end
+                    end;
+                    st2 := !st2 + 14;
+                    let m2 = ref !m in
+                    while !m2 lsr 1 <> 0 do
+                      m2 := !m2 lsr 1;
+                      if Arithmetic.decode_decision ac_bins.(!st2)
+                          arith_state.Arithmetic.decoder <> 0 then
+                        v := !v lor !m2
+                    done;
+                    let magnitude = !v + 1 in
+                    block_coeffs.(!k) <-
+                      (if sign <> 0 then -magnitude else magnitude) lsl al;
+                    inner_done := true
+                  end
+                  else begin
+                    k := !k + 1;
+                    if !k > se then
+                      inner_done := true
                     else begin
-                      let continue =
-                        Arithmetic.decode_decision mag_ctx
-                          arith_state.Arithmetic.decoder
-                      in
-                      if continue = 0 then sz else decode_category (sz + 1)
+                      st := 3 * !k;
+                      if Arithmetic.decode_decision ac_bins.(!st)
+                          arith_state.Arithmetic.decoder <> 0 then begin
+                        inner_done := true;
+                        scan_done := true
+                      end
                     end
-                  in
-                  let category = decode_category 1 in
-
-                  (* Decode magnitude bits *)
-                  let magnitude =
-                    if category <= 1 then 1
-                    else begin
-                      let rec decode_bits acc remaining =
-                        if remaining <= 0 then acc
-                        else begin
-                          let bit =
-                            Arithmetic.decode_decision
-                              ac_bins.Arithmetic.ac_x1.(ki)
-                              arith_state.Arithmetic.decoder
-                          in
-                          decode_bits ((acc lsl 1) lor bit) (remaining - 1)
-                        end
-                      in
-                      let extra = decode_bits 0 (category - 1) in
-                      (1 lsl (category - 1)) + extra
-                    end
-                  in
-
-                  block_coeffs.(!k) <-
-                    (if sign = 0 then magnitude else -magnitude) lsl al;
-                  incr k
-                end
+                  end
+                done;
+                k := !k + 1
               end
             done
           done
@@ -1157,10 +1164,13 @@ let decode_lossless_huffman_scan reader frame scan state =
 (** Decode a single difference value using arithmetic coding for lossless JPEG *)
 let decode_lossless_diff_arithmetic (arith_state : Arithmetic.arith_scan_state) component_idx =
   let dc_bins = arith_state.Arithmetic.dc_bins.(component_idx) in
-  let prev_dc = arith_state.Arithmetic.prev_dc.(component_idx) in
   let l = arith_state.Arithmetic.l.(component_idx) in
-  let diff = Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins prev_dc l in
-  (* Update prev_dc for context - must match encoder's encode_lossless_diff *)
+  let u = arith_state.Arithmetic.u.(component_idx) in
+  let dc_ctx = arith_state.Arithmetic.dc_context.(component_idx) in
+  let diff, new_dc_ctx =
+    Arithmetic.decode_dc_diff arith_state.Arithmetic.decoder dc_bins dc_ctx l u
+  in
+  arith_state.Arithmetic.dc_context.(component_idx) <- new_dc_ctx;
   arith_state.Arithmetic.prev_dc.(component_idx) <- diff;
   diff
 
