@@ -925,7 +925,7 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
             let k = ref ss in
             let scan_done = ref false in
             while not !scan_done && !k <= se do
-              let st = ref (3 * !k) in
+              let st = ref (3 * (!k - 1)) in
               (* EOB decision *)
               let eob =
                 Arithmetic.decode_decision ac_bins.(!st)
@@ -983,7 +983,7 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
                     if !k > se then
                       inner_done := true
                     else begin
-                      st := 3 * !k;
+                      st := 3 * (!k - 1);
                       if Arithmetic.decode_decision ac_bins.(!st)
                           arith_state.Arithmetic.decoder <> 0 then begin
                         inner_done := true;

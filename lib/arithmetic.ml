@@ -406,10 +406,11 @@ let decode_dc_diff state (bins : dc_stat_bins) dc_context l u =
 
 (** Decode AC coefficients (matching libjpeg jdarith.c decode_mcu exactly)
 
-    AC bin layout (ac_stats[tbl]):
-    - [3*k+0]: EOB decision at position k
-    - [3*k+1]: Zero/nonzero at position k
-    - [3*k+2]: SX (magnitude extension)
+    AC bin layout (ac_stats[tbl]) - matches libjpeg (k=0 start):
+    For coefficient at position p (1-63):
+    - [3*(p-1)+0]: EOB decision
+    - [3*(p-1)+1]: Zero/nonzero
+    - [3*(p-1)+2]: SX (magnitude extension)
     - [189]: X1 for k <= Kx
     - [217]: X1 for k > Kx
     - [st+14]: Magnitude bit pattern
@@ -421,9 +422,9 @@ let decode_ac_block state (bins : ac_stat_bins) fixed_bin kx =
   let k = ref 1 in
   let outer_done = ref false in
   while not !outer_done && !k <= 63 do
-    let st = ref (3 * !k) in
+    let st = ref (3 * (!k - 1)) in
 
-    (* EOB decision at 3*k *)
+    (* EOB decision *)
     let eob = decode_decision bins.(!st) state in
     if eob <> 0 then
       outer_done := true  (* All remaining coefficients are zero *)
@@ -474,7 +475,7 @@ let decode_ac_block state (bins : ac_stat_bins) fixed_bin kx =
           if !k > 63 then
             inner_done := true
           else begin
-            st := 3 * !k;
+            st := 3 * (!k - 1);
             (* EOB test at new position *)
             if decode_decision bins.(!st) state <> 0 then begin
               inner_done := true;
@@ -879,7 +880,7 @@ let encode_ac_block state (bins : ac_stat_bins) fixed_bin coeffs kx =
   let k = ref 1 in
   let outer_done = ref false in
   while not !outer_done && !k <= 63 do
-    let st = ref (3 * !k) in
+    let st = ref (3 * (!k - 1)) in
     if !k > !ke then begin
       (* Figure F.6: Encode EOB *)
       encode_decision bins.(!st) state 1;
@@ -937,7 +938,7 @@ let encode_ac_block state (bins : ac_stat_bins) fixed_bin coeffs kx =
             outer_done := true
           end
           else begin
-            st := 3 * !k;
+            st := 3 * (!k - 1);
             if !k > !ke then begin
               encode_decision bins.(!st) state 1;  (* EOB *)
               inner_done := true;
@@ -1037,7 +1038,7 @@ let encode_arith_ac_only state component_idx coeffs ~ss ~se:scan_se =
   let k = ref ss in
   let outer_done = ref false in
   while not !outer_done && !k <= scan_se do
-    let st = ref (3 * !k) in
+    let st = ref (3 * (!k - 1)) in
     if !k > !ke then begin
       encode_decision ac_bins.(!st) state.encoder 1;  (* EOB *)
       outer_done := true
@@ -1090,7 +1091,7 @@ let encode_arith_ac_only state component_idx coeffs ~ss ~se:scan_se =
             outer_done := true
           end
           else begin
-            st := 3 * !k;
+            st := 3 * (!k - 1);
             if !k > !ke then begin
               encode_decision ac_bins.(!st) state.encoder 1;  (* EOB *)
               inner_done := true;
