@@ -945,7 +945,6 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
                       Arithmetic.decode_decision fixed_bin
                         arith_state.Arithmetic.decoder
                     in
-                    let v = ref sign in
                     (* Decode magnitude category *)
                     let st2 = ref (!st + 2) in
                     let m = ref (Arithmetic.decode_decision ac_bins.(!st2)
@@ -959,12 +958,15 @@ let decode_arith_ac_scan entropy_data frame scan state coefficients mcus_x
                         while not !cat_done do
                           if Arithmetic.decode_decision ac_bins.(!st2)
                               arith_state.Arithmetic.decoder <> 0 then begin
-                            m := !m lsl 1; st2 := !st2 + 1
+                            if !m lsl 1 = 0x8000 then cat_done := true
+                            else begin m := !m lsl 1; st2 := !st2 + 1 end
                           end
                           else cat_done := true
                         done
                       end
                     end;
+                    (* Figure F.24: Decode magnitude bit pattern *)
+                    let v = ref !m in  (* v starts at m, matching libjpeg *)
                     st2 := !st2 + 14;
                     let m2 = ref !m in
                     while !m2 lsr 1 <> 0 do
