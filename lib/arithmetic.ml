@@ -343,6 +343,22 @@ let create_ac_stat_bins () =
 (** Fixed-probability context at state 113 (0.5 probability per T.851) *)
 let create_fixed_bin () = create_context_with_index 113
 
+(** Decode magnitude bit pattern (Figure F.24).
+    Given category m and context bin at st+14, decode the bit pattern
+    and return the magnitude value v+1.
+    bins: context array, st: base context index, m: category,
+    state: decoder state. Returns reconstructed value (v+1). *)
+let decode_magnitude_bits bins st m state =
+  let st_bits = st + 14 in
+  let m2 = ref m in
+  let v = ref m in
+  while !m2 lsr 1 <> 0 do
+    m2 := !m2 lsr 1;
+    if decode_decision bins.(st_bits) state <> 0 then
+      v := !v lor !m2
+  done;
+  !v + 1
+
 (** Decode DC difference value (matching libjpeg jdarith.c decode_mcu exactly)
 
     DC bin layout (dc_stats[tbl]):
@@ -381,17 +397,7 @@ let decode_dc_diff state (bins : dc_stat_bins) dc_context l u =
     end;
 
     (* Figure F.24: Decode magnitude bit pattern *)
-    let v = ref !m in  (* v starts at m, matching libjpeg's v = m *)
-    st_ref := !st_ref + 14;
-    let m2 = ref !m in
-    while !m2 lsr 1 <> 0 do
-      m2 := !m2 lsr 1;
-      if decode_decision bins.(!st_ref) state <> 0 then
-        v := !v lor !m2
-    done;
-
-    (* Reconstruct value: magnitude = v + 1 *)
-    let magnitude = !v + 1 in
+    let magnitude = decode_magnitude_bits bins !st_ref !m state in
 
     (* Conditioning category update *)
     let final_dc_ctx =
@@ -404,24 +410,15 @@ let decode_dc_diff state (bins : dc_stat_bins) dc_context l u =
     (diff, final_dc_ctx)
   end
 
-(** Decode AC coefficients (matching libjpeg jdarith.c decode_mcu exactly)
-
-    AC bin layout (ac_stats[tbl]) - matches libjpeg (k=0 start):
-    For coefficient at position p (1-63):
-    - [3*(p-1)+0]: EOB decision
-    - [3*(p-1)+1]: Zero/nonzero
-    - [3*(p-1)+2]: SX (magnitude extension)
-    - [189]: X1 for k <= Kx
-    - [217]: X1 for k > Kx
-    - [st+14]: Magnitude bit pattern
-    Sign uses fixed_bin (state 113). *)
-let decode_ac_block state (bins : ac_stat_bins) fixed_bin kx =
-  let coeffs = Array.make 64 0 in
-
+(** Decode AC coefficients into [coeffs] from position [start_k] to [end_k].
+    The [shift] parameter left-shifts decoded values (used for progressive
+    successive approximation; pass 0 for sequential). *)
+let decode_ac_coefficients state (bins : ac_stat_bins) fixed_bin kx
+    coeffs ~start_k ~end_k ~shift =
   (* Figure F.5: Decode_AC_Coefficients - matching jdarith.c decode_mcu *)
-  let k = ref 1 in
+  let k = ref start_k in
   let outer_done = ref false in
-  while not !outer_done && !k <= 63 do
+  while not !outer_done && !k <= end_k do
     let st = ref (3 * (!k - 1)) in
 
     (* EOB decision *)
@@ -456,23 +453,16 @@ let decode_ac_block state (bins : ac_stat_bins) fixed_bin kx =
           end;
 
           (* Figure F.24: Decode magnitude bit pattern *)
-          let v = ref !m in  (* v starts at m, matching libjpeg *)
-          st2 := !st2 + 14;
-          let m2 = ref !m in
-          while !m2 lsr 1 <> 0 do
-            m2 := !m2 lsr 1;
-            if decode_decision bins.(!st2) state <> 0 then
-              v := !v lor !m2
-          done;
-          let magnitude = !v + 1 in
-          coeffs.(!k) <- (if sign <> 0 then -magnitude else magnitude);
+          let magnitude = decode_magnitude_bits bins !st2 !m state in
+          coeffs.(!k) <-
+            (if sign <> 0 then -magnitude else magnitude) lsl shift;
           inner_done := true;
           (* Outer loop will increment k *)
         end
         else begin
           (* Zero coefficient - advance to next position *)
           k := !k + 1;
-          if !k > 63 then
+          if !k > end_k then
             inner_done := true
           else begin
             st := 3 * (!k - 1);
@@ -487,8 +477,12 @@ let decode_ac_block state (bins : ac_stat_bins) fixed_bin kx =
       done;
       k := !k + 1
     end
-  done;
+  done
 
+let decode_ac_block state (bins : ac_stat_bins) fixed_bin kx =
+  let coeffs = Array.make 64 0 in
+  decode_ac_coefficients state bins fixed_bin kx coeffs
+    ~start_k:1 ~end_k:63 ~shift:0;
   coeffs
 
 (* ============================================================================
@@ -556,15 +550,17 @@ let decode_arith_block state component_idx =
 let reset_bins bins =
   Array.iter (fun c -> c.index <- 0; c.mps <- 0) bins
 
+(** Reset shared scan contexts (DC predictors, conditioning, statistical bins) *)
+let reset_scan_contexts ~prev_dc ~dc_context ~dc_bins ~ac_bins =
+  Array.fill prev_dc 0 (Array.length prev_dc) 0;
+  Array.fill dc_context 0 (Array.length dc_context) 0;
+  Array.iter reset_bins dc_bins;
+  Array.iter reset_bins ac_bins
+
 (** Reset decoder state at restart marker *)
 let reset_arith_decoder state =
-  (* Reset DC predictors *)
-  Array.fill state.prev_dc 0 (Array.length state.prev_dc) 0;
-  (* Reset DC conditioning contexts *)
-  Array.fill state.dc_context 0 (Array.length state.dc_context) 0;
-  (* Reset statistical bins to initial state *)
-  Array.iter reset_bins state.dc_bins;
-  Array.iter reset_bins state.ac_bins
+  reset_scan_contexts ~prev_dc:state.prev_dc ~dc_context:state.dc_context
+    ~dc_bins:state.dc_bins ~ac_bins:state.ac_bins
 
 (* ============================================================================
    JPEG MQ-Coder Encoder (ITU-T T.81 Annex D)
@@ -745,6 +741,17 @@ let encode_decision ctx state d =
   (* Renormalize if needed *)
   if state.a < 0x8000 then renorme state
 
+(** Encode magnitude bit pattern (Figure F.9).
+    bins: context array, st_bits: context index (st+14),
+    m: category, v_minus_1: abs(value)-1, state: encoder state. *)
+let encode_magnitude_bits bins st_bits m v_minus_1 state =
+  let m2 = ref m in
+  while !m2 lsr 1 <> 0 do
+    m2 := !m2 lsr 1;
+    let bit = if !m2 land v_minus_1 <> 0 then 1 else 0 in
+    encode_decision bins.(st_bits) state bit
+  done
+
 (** Flush the encoder (libjpeg-turbo finish_pass with Pacman termination) *)
 let flush_jpeg_encoder state =
   (* Section D.1.8: Termination of encoding *)
@@ -857,101 +864,92 @@ let encode_dc_diff state (bins : dc_stat_bins) dc_context diff l u =
     in
 
     (* Figure F.9: Encoding the magnitude bit pattern of v *)
-    let st_bits = !st_ref + 14 in
-    let m2 = ref !m in
-    while !m2 lsr 1 <> 0 do
-      m2 := !m2 lsr 1;
-      let bit = if !m2 land v_minus_1 <> 0 then 1 else 0 in
-      encode_decision bins.(st_bits) state bit
-    done;
+    encode_magnitude_bits bins (!st_ref + 14) !m v_minus_1 state;
 
     final_dc_ctx
   end
 
-(** Encode AC coefficients for a block (matching libjpeg jcarith.c encode_mcu) *)
-let encode_ac_block state (bins : ac_stat_bins) fixed_bin coeffs kx =
-  (* Find the last non-zero coefficient (EOB index) *)
+(** Encode AC coefficients in a spectral range (matching jcarith.c).
+    Core implementation used by both encode_ac_block and encode_arith_ac_only. *)
+let encode_ac_coefficients encoder (bins : ac_stat_bins) fixed_bin coeffs kx
+    ~start_k ~end_k =
+  (* Find the last non-zero coefficient in range *)
   let ke = ref 0 in
-  for i = 63 downto 1 do
+  for i = end_k downto start_k do
     if !ke = 0 && coeffs.(i) <> 0 then ke := i
   done;
 
   (* Figure F.5: Encode_AC_Coefficients - matching jcarith.c encode_mcu *)
-  let k = ref 1 in
+  let k = ref start_k in
   let outer_done = ref false in
-  while not !outer_done && !k <= 63 do
+  while not !outer_done && !k <= end_k do
     let st = ref (3 * (!k - 1)) in
     if !k > !ke then begin
       (* Figure F.6: Encode EOB *)
-      encode_decision bins.(!st) state 1;
+      encode_decision bins.(!st) encoder 1;
       outer_done := true
     end
     else begin
-      encode_decision bins.(!st) state 0;  (* Not EOB *)
+      encode_decision bins.(!st) encoder 0;  (* Not EOB *)
       let inner_done = ref false in
       while not !inner_done do
         let v = coeffs.(!k) in
         if v <> 0 then begin
-          encode_decision bins.(!st + 1) state 1;  (* Nonzero *)
-          (* Sign *)
+          encode_decision bins.(!st + 1) encoder 1;  (* Nonzero *)
           let sign = if v < 0 then 1 else 0 in
-          encode_decision fixed_bin state sign;
+          encode_decision fixed_bin encoder sign;
           (* Magnitude category *)
           let st2 = ref (!st + 2) in
           let abs_v = abs v in
           let m = ref 0 in
           let v_minus_1 = abs_v - 1 in
           if v_minus_1 <> 0 then begin
-            encode_decision bins.(!st2) state 1;
+            encode_decision bins.(!st2) encoder 1;
             m := 1;
             let v2 = ref v_minus_1 in
             if !v2 lsr 1 <> 0 then begin
               v2 := !v2 lsr 1;
-              encode_decision bins.(!st2) state 1;
+              encode_decision bins.(!st2) encoder 1;
               m := !m lsl 1;
               st2 := if !k <= kx then 189 else 217;
               while !v2 lsr 1 <> 0 do
                 v2 := !v2 lsr 1;
-                encode_decision bins.(!st2) state 1;
+                encode_decision bins.(!st2) encoder 1;
                 m := !m lsl 1;
                 st2 := !st2 + 1
               done
             end
           end;
-          encode_decision bins.(!st2) state 0;  (* End of category *)
-          (* Magnitude bit pattern *)
-          st2 := !st2 + 14;
-          let m2 = ref !m in
-          while !m2 lsr 1 <> 0 do
-            m2 := !m2 lsr 1;
-            let bit = if !m2 land v_minus_1 <> 0 then 1 else 0 in
-            encode_decision bins.(!st2) state bit
-          done;
+          encode_decision bins.(!st2) encoder 0;  (* End of category *)
+          encode_magnitude_bits bins (!st2 + 14) !m v_minus_1 encoder;
           inner_done := true
-          (* Outer loop will increment k *)
         end
         else begin
-          encode_decision bins.(!st + 1) state 0;  (* Zero *)
+          encode_decision bins.(!st + 1) encoder 0;  (* Zero *)
           k := !k + 1;
-          if !k > 63 then begin
+          if !k > end_k then begin
             inner_done := true;
             outer_done := true
           end
           else begin
             st := 3 * (!k - 1);
             if !k > !ke then begin
-              encode_decision bins.(!st) state 1;  (* EOB *)
+              encode_decision bins.(!st) encoder 1;  (* EOB *)
               inner_done := true;
               outer_done := true
             end
             else
-              encode_decision bins.(!st) state 0  (* Not EOB *)
+              encode_decision bins.(!st) encoder 0  (* Not EOB *)
           end
         end
       done;
       k := !k + 1
     end
   done
+
+(** Encode AC coefficients for a block (matching libjpeg jcarith.c encode_mcu) *)
+let encode_ac_block state (bins : ac_stat_bins) fixed_bin coeffs kx =
+  encode_ac_coefficients state bins fixed_bin coeffs kx ~start_k:1 ~end_k:63
 
 (* ============================================================================
    Full JPEG Arithmetic Scan Encoder
@@ -1024,87 +1022,9 @@ let encode_arith_dc_only state component_idx dc_value =
   state.dc_context.(component_idx) <- new_dc_ctx
 
 (** Encode AC coefficients in a spectral range (for progressive AC scans) *)
-let encode_arith_ac_only state component_idx coeffs ~ss ~se:scan_se =
-  let ac_bins = state.ac_bins.(component_idx) in
-  let kx = state.kx.(component_idx) in
-
-  (* Find the last non-zero coefficient in the spectral range *)
-  let ke = ref 0 in
-  for i = scan_se downto ss do
-    if !ke = 0 && coeffs.(i) <> 0 then ke := i
-  done;
-
-  (* Matching jcarith.c encode_mcu_AC_first structure with 3*k indexing *)
-  let k = ref ss in
-  let outer_done = ref false in
-  while not !outer_done && !k <= scan_se do
-    let st = ref (3 * (!k - 1)) in
-    if !k > !ke then begin
-      encode_decision ac_bins.(!st) state.encoder 1;  (* EOB *)
-      outer_done := true
-    end
-    else begin
-      encode_decision ac_bins.(!st) state.encoder 0;  (* Not EOB *)
-      let inner_done = ref false in
-      while not !inner_done do
-        let v = coeffs.(!k) in
-        if v <> 0 then begin
-          encode_decision ac_bins.(!st + 1) state.encoder 1;  (* Nonzero *)
-          let sign = if v < 0 then 1 else 0 in
-          encode_decision state.fixed_bin state.encoder sign;
-          let st2 = ref (!st + 2) in
-          let abs_v = abs v in
-          let m = ref 0 in
-          let v_minus_1 = abs_v - 1 in
-          if v_minus_1 <> 0 then begin
-            encode_decision ac_bins.(!st2) state.encoder 1;
-            m := 1;
-            let v2 = ref v_minus_1 in
-            if !v2 lsr 1 <> 0 then begin
-              v2 := !v2 lsr 1;
-              encode_decision ac_bins.(!st2) state.encoder 1;
-              m := !m lsl 1;
-              st2 := if !k <= kx then 189 else 217;
-              while !v2 lsr 1 <> 0 do
-                v2 := !v2 lsr 1;
-                encode_decision ac_bins.(!st2) state.encoder 1;
-                m := !m lsl 1;
-                st2 := !st2 + 1
-              done
-            end
-          end;
-          encode_decision ac_bins.(!st2) state.encoder 0;
-          st2 := !st2 + 14;
-          let m2 = ref !m in
-          while !m2 lsr 1 <> 0 do
-            m2 := !m2 lsr 1;
-            let bit = if !m2 land v_minus_1 <> 0 then 1 else 0 in
-            encode_decision ac_bins.(!st2) state.encoder bit
-          done;
-          inner_done := true
-        end
-        else begin
-          encode_decision ac_bins.(!st + 1) state.encoder 0;  (* Zero *)
-          k := !k + 1;
-          if !k > scan_se then begin
-            inner_done := true;
-            outer_done := true
-          end
-          else begin
-            st := 3 * (!k - 1);
-            if !k > !ke then begin
-              encode_decision ac_bins.(!st) state.encoder 1;  (* EOB *)
-              inner_done := true;
-              outer_done := true
-            end
-            else
-              encode_decision ac_bins.(!st) state.encoder 0  (* Not EOB *)
-          end
-        end
-      done;
-      k := !k + 1
-    end
-  done
+let encode_arith_ac_only state component_idx coeffs ~ss ~se =
+  encode_ac_coefficients state.encoder state.ac_bins.(component_idx)
+    state.fixed_bin coeffs state.kx.(component_idx) ~start_k:ss ~end_k:se
 
 (** Encode a single prediction error for lossless JPEG *)
 let encode_lossless_diff state component_idx diff =
@@ -1119,10 +1039,8 @@ let encode_lossless_diff state component_idx diff =
 
 (** Reset encoder state at restart marker *)
 let reset_arith_encoder state =
-  Array.fill state.prev_dc 0 (Array.length state.prev_dc) 0;
-  Array.fill state.dc_context 0 (Array.length state.dc_context) 0;
-  Array.iter reset_bins state.dc_bins;
-  Array.iter reset_bins state.ac_bins;
+  reset_scan_contexts ~prev_dc:state.prev_dc ~dc_context:state.dc_context
+    ~dc_bins:state.dc_bins ~ac_bins:state.ac_bins;
   state.encoder.a <- 0x10000;
   state.encoder.c <- 0;
   state.encoder.ct <- 11;

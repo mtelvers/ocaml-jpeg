@@ -13,27 +13,21 @@ let c = function 0 -> 1.0 /. sqrt 2.0 | _ -> 1.0
 
 (** 1D IDCT on 8 values *)
 let idct_1d input =
-  let output = Array.make 8 0.0 in
-  for x = 0 to 7 do
+  Array.init 8 (fun x ->
     let sum = ref 0.0 in
     for u = 0 to 7 do
       sum := !sum +. (c u *. input.(u) *. cos_table.(u).(x))
     done;
-    output.(x) <- !sum *. 0.5
-  done;
-  output
+    !sum *. 0.5)
 
 (** 1D FDCT on 8 values *)
 let fdct_1d input =
-  let output = Array.make 8 0.0 in
-  for u = 0 to 7 do
+  Array.init 8 (fun u ->
     let sum = ref 0.0 in
     for x = 0 to 7 do
       sum := !sum +. (input.(x) *. cos_table.(u).(x))
     done;
-    output.(u) <- c u *. !sum *. 0.5
-  done;
-  output
+    c u *. !sum *. 0.5)
 
 (** 2D IDCT on 8x8 block (input in row-major, 64 elements) *)
 let idct block =

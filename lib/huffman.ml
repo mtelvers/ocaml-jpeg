@@ -86,28 +86,22 @@ let decode_symbol reader table =
   done;
 
   (* Read bits until we find a valid code *)
-  let code = ref (Bitstream.read_bit reader) in
-  let found = ref None in
-  let length = ref 1 in
-
-  while !found = None && !length <= 16 do
-    if
-      dt.max_code.(!length) >= 0
-      && !code >= min_code.(!length)
-      && !code <= dt.max_code.(!length)
+  let rec find code length =
+    if length > 16 then failwith "Invalid Huffman code"
+    else if
+      dt.max_code.(length) >= 0
+      && code >= min_code.(length)
+      && code <= dt.max_code.(length)
     then begin
-      let idx = dt.val_ptr.(!length) + !code - min_code.(!length) in
-      if idx >= 0 && idx < Array.length dt.values then
-        found := Some dt.values.(idx)
-    end;
-    if !found = None && !length < 16 then begin
-      code := (!code lsl 1) lor Bitstream.read_bit reader;
-      incr length
+      let idx = dt.val_ptr.(length) + code - min_code.(length) in
+      if idx >= 0 && idx < Array.length dt.values then dt.values.(idx)
+      else failwith "Invalid Huffman code"
     end
-    else incr length
-  done;
-
-  match !found with Some v -> v | None -> failwith "Invalid Huffman code"
+    else if length < 16 then
+      find ((code lsl 1) lor Bitstream.read_bit reader) (length + 1)
+    else failwith "Invalid Huffman code"
+  in
+  find (Bitstream.read_bit reader) 1
 
 (** Encode one symbol using bit writer *)
 let encode_symbol writer table symbol =

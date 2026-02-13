@@ -84,14 +84,11 @@ let read_bit reader =
 
 (** Read n bits (n <= 16) and return as integer *)
 let read_bits reader n =
-  if n = 0 then 0
-  else begin
-    let result = ref 0 in
-    for _ = 1 to n do
-      result := (!result lsl 1) lor read_bit reader
-    done;
-    !result
-  end
+  let rec loop remaining acc =
+    if remaining = 0 then acc
+    else loop (remaining - 1) ((acc lsl 1) lor read_bit reader)
+  in
+  loop n 0
 
 (** Peek at marker (check for FF xx sequence without consuming) *)
 let peek_marker reader =

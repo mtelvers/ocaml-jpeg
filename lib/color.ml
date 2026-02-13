@@ -166,21 +166,23 @@ let subsample_420 plane width height =
     for x = 0 to new_width - 1 do
       let src_x = x * 2 in
       let src_y = y * 2 in
-      let sum = ref 0 in
-      let count = ref 0 in
-
-      for dy = 0 to 1 do
-        for dx = 0 to 1 do
-          let sx = src_x + dx in
-          let sy = src_y + dy in
-          if sx < width && sy < height then begin
-            sum := !sum + plane.((sy * width) + sx);
-            incr count
-          end
-        done
-      done;
-
-      result.((y * new_width) + x) <- !sum / !count
+      let has_right = src_x + 1 < width in
+      let has_bottom = src_y + 1 < height in
+      let tl = plane.((src_y * width) + src_x) in
+      let sum, count =
+        match has_right, has_bottom with
+        | true, true ->
+            ( tl + plane.((src_y * width) + src_x + 1)
+              + plane.(((src_y + 1) * width) + src_x)
+              + plane.(((src_y + 1) * width) + src_x + 1),
+              4 )
+        | true, false ->
+            (tl + plane.((src_y * width) + src_x + 1), 2)
+        | false, true ->
+            (tl + plane.(((src_y + 1) * width) + src_x), 2)
+        | false, false -> (tl, 1)
+      in
+      result.((y * new_width) + x) <- sum / count
     done
   done;
 

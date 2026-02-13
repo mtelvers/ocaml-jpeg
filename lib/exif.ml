@@ -183,19 +183,19 @@ let parse_ifd data pos big_endian tiff_offset =
   if pos < 0 || pos + 2 > Bytes.length data then ([], 0)
   else begin
     let entry_count = read_u16 data pos big_endian in
-    let entries = ref [] in
-
-    for i = 0 to entry_count - 1 do
-      let entry_pos = pos + 2 + (i * 12) in
-      if entry_pos + 12 <= Bytes.length data then begin
-        let tag, value =
-          parse_ifd_entry data entry_pos big_endian tiff_offset
-        in
-        match value with
-        | Some v -> entries := { tag; value = v } :: !entries
-        | None -> ()
-      end
-    done;
+    let entries =
+      List.init entry_count (fun i ->
+        let entry_pos = pos + 2 + (i * 12) in
+        if entry_pos + 12 <= Bytes.length data then
+          let tag, value =
+            parse_ifd_entry data entry_pos big_endian tiff_offset
+          in
+          match value with
+          | Some v -> Some { tag; value = v }
+          | None -> None
+        else None)
+      |> List.filter_map Fun.id
+    in
 
     (* Next IFD offset *)
     let next_ifd_pos = pos + 2 + (entry_count * 12) in
@@ -205,7 +205,7 @@ let parse_ifd data pos big_endian tiff_offset =
       else 0
     in
 
-    (List.rev !entries, next_ifd)
+    (entries, next_ifd)
   end
 
 (** Get integer value from tag *)
