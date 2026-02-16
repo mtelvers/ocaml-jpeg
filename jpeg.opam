@@ -2,7 +2,7 @@
 opam-version: "2.0"
 synopsis: "Pure OCaml JPEG library"
 description:
-  "A native OCaml library for reading and writing baseline sequential JPEG/JFIF files"
+  "A native OCaml library for reading and writing JPEG/JFIF files with no external C dependencies"
 maintainer: ["Mark Elvers <mark.elvers@tunbury.org>"]
 authors: ["Mark Elvers <mark.elvers@tunbury.org>"]
 license: "MIT"

@@ -1,16 +1,21 @@
 # jpeg - Pure OCaml JPEG Library
 
-A native OCaml library for reading and writing baseline sequential JPEG/JFIF files, with no external C dependencies.
+A native OCaml library for reading and writing JPEG/JFIF files, with no external C dependencies. Supports baseline, progressive, arithmetic coding, and lossless modes.
 
 ## Features
 
 - **Pure OCaml** - No C bindings or external dependencies
 - **Read & Write** - Full support for encoding and decoding
 - **Baseline JPEG** - SOF0 (baseline sequential DCT)
-- **8-bit precision** - Standard 8 bits per sample
-- **Color support** - Grayscale (1 component) and YCbCr (3 components)
+- **Progressive JPEG** - SOF2/SOF10 (multi-scan for incremental display)
+- **Arithmetic coding** - SOF9/SOF10/SOF11 (MQ-Coder per ITU-T T.81)
+- **Lossless JPEG** - SOF3/SOF11 (pixel-perfect compression, 8 predictor modes)
+- **8-bit and 12-bit precision**
+- **Color support** - Grayscale, YCbCr, CMYK, and YCCK
 - **Chroma subsampling** - 4:4:4, 4:2:2, and 4:2:0
 - **EXIF metadata** - Parse and preserve EXIF data
+- **ICC profiles** - Multi-chunk APP2 support
+- **Restart markers** - Configurable DRI/RST intervals
 - **Quality control** - Configurable compression quality (1-100)
 
 ## Installation
@@ -18,8 +23,8 @@ A native OCaml library for reading and writing baseline sequential JPEG/JFIF fil
 ### From source
 
 ```bash
-git clone https://github.com/example/jpeg.git
-cd jpeg
+git clone https://github.com/mtelvers/ocaml-jpeg.git
+cd ocaml-jpeg
 opam install . --deps-only
 dune build
 ```
@@ -73,6 +78,28 @@ let jpeg_data : bytes = Jpeg.write_bytes ~quality:90 image
 let image = Jpeg.read_bytes jpeg_data
 ```
 
+### Advanced encoding options
+
+```ocaml
+let options = { Jpeg.default_encode_options with
+  quality = 90;
+  encoding_mode = Progressive;
+  entropy_coding = Arithmetic;
+  subsampling = Sub_444;
+} in
+Jpeg.write_with_options options "output.jpg" image
+```
+
+### Lossless encoding
+
+```ocaml
+let options = { Jpeg.default_encode_options with
+  encoding_mode = Lossless;
+  predictor = 1;  (* 0 = auto, 1-7 = specific predictor *)
+} in
+Jpeg.write_with_options options "lossless.jpg" image
+```
+
 ### Working with EXIF metadata
 
 ```ocaml
@@ -93,19 +120,51 @@ let exif = Jpeg.Exif.create_minimal ~orientation:1 ~software:"My App" ()
 let image = Jpeg.create_image_with_exif width height pixels exif
 ```
 
+### Working with ICC profiles
+
+```ocaml
+(* Read ICC profile from an image *)
+let image = Jpeg.read "photo.jpg" in
+match image.icc_profile with
+| Some icc -> Printf.printf "ICC profile: %d bytes\n" (Bytes.length (Jpeg.Icc.to_bytes icc))
+| None -> print_endline "No ICC profile"
+
+(* Create image with ICC profile *)
+let icc = Jpeg.Icc.from_bytes icc_data in
+let image = Jpeg.create_image_with_icc width height pixels icc
+```
+
 ## API Reference
 
 ### Types
 
 ```ocaml
+type pixel_format =
+  | RGB24   (* 3 bytes per pixel: R, G, B *)
+  | CMYK32  (* 4 bytes per pixel: C, M, Y, K *)
+
 type pixel_data =
   (int, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
 
 type image = {
   width : int;
   height : int;
-  pixels : pixel_data;  (* RGB24: R,G,B,R,G,B,... *)
+  pixels : pixel_data;
+  pixel_format : pixel_format;
   exif : Exif.t option;
+  icc_profile : Icc.t option;
+}
+
+type encode_options = {
+  quality : int;              (* 1-100 *)
+  subsampling : subsampling;  (* Sub_444, Sub_422, Sub_420 *)
+  color_mode : color_mode;    (* Color, Grayscale, CMYK, YCCK *)
+  encoding_mode : encoding_mode;  (* Baseline, Progressive, Lossless *)
+  restart_interval : int;     (* MCUs between RST markers, 0 = disabled *)
+  precision : precision;      (* Precision_8 or Precision_12 *)
+  entropy_coding : entropy_coding;  (* Huffman or Arithmetic *)
+  predictor : int;            (* For lossless: 0 = auto, 1-7 = specific *)
+  point_transform : int;      (* For lossless: 0 = none *)
 }
 ```
 
@@ -115,11 +174,20 @@ type image = {
 |----------|-------------|
 | `read : string -> image` | Read JPEG from file |
 | `read_bytes : bytes -> image` | Decode JPEG from memory |
-| `write : ?quality:int -> string -> image -> unit` | Write JPEG to file |
-| `write_bytes : ?quality:int -> image -> bytes` | Encode JPEG to memory |
-| `create_image : int -> int -> pixel_data -> image` | Create image from RGB data |
+| `write : ?quality:int -> string -> image -> unit` | Write JPEG to file (baseline, Huffman) |
+| `write_bytes : ?quality:int -> image -> bytes` | Encode JPEG to memory (baseline, Huffman) |
+| `write_with_options : encode_options -> string -> image -> unit` | Write JPEG with full encoding options |
+| `write_bytes_with_options : encode_options -> image -> bytes` | Encode JPEG to memory with full options |
+| `create_image : int -> int -> pixel_data -> image` | Create RGB image |
+| `create_image_with_exif : int -> int -> pixel_data -> Exif.t -> image` | Create RGB image with EXIF |
+| `create_image_with_icc : int -> int -> pixel_data -> Icc.t -> image` | Create RGB image with ICC profile |
+| `create_image_with_metadata : int -> int -> pixel_data -> Exif.t -> Icc.t -> image` | Create RGB image with EXIF and ICC |
+| `create_cmyk_image : int -> int -> pixel_data -> image` | Create CMYK image |
 | `get_pixel : image -> int -> int -> int * int * int` | Get RGB at (x, y) |
 | `set_pixel : image -> int -> int -> int -> int -> int -> unit` | Set RGB at (x, y) |
+| `get_cmyk_pixel : image -> int -> int -> int * int * int * int` | Get CMYK at (x, y) |
+| `set_cmyk_pixel : image -> int -> int -> int -> int -> int -> int -> unit` | Set CMYK at (x, y) |
+| `default_encode_options : encode_options` | Default options (Q75, baseline, Huffman, 4:2:0) |
 
 ## Command-Line Tools
 
@@ -170,41 +238,24 @@ For advanced usage, the following modules are exposed:
 | `Jpeg.Huffman` | Huffman encoding/decoding |
 | `Jpeg.Dct` | DCT/IDCT transforms |
 | `Jpeg.Quantization` | Quantization tables and zig-zag ordering |
-| `Jpeg.Color` | RGB ↔ YCbCr conversion |
+| `Jpeg.Color` | RGB/YCbCr/CMYK/YCCK color space conversions |
 | `Jpeg.Exif` | EXIF metadata parsing |
+| `Jpeg.Arithmetic` | MQ-Coder arithmetic coding (ITU-T T.81) |
+| `Jpeg.Icc` | ICC color profile handling |
+| `Jpeg.Predictor` | Lossless predictors (ITU-T T.81 Table H.1) |
 
 ## Limitations
 
 The following are **not** currently supported:
 
-- Progressive JPEG (SOF2)
-- Arithmetic coding
-- 12-bit or 16-bit precision
-- CMYK color space
-- Lossless JPEG
+- 16-bit precision
+- Hierarchical JPEG (SOF5, SOF6, SOF7, SOF13, SOF14, SOF15)
 
 ## Running Tests
 
 ```bash
-# Unit tests
 dune runtest
-
-# Test with real JPEG files
-dune exec examples/real_jpeg_test.exe
 ```
-
-## Benchmarks
-
-Typical performance on a modern system:
-
-| Operation | Image Size | Time |
-|-----------|------------|------|
-| Decode | 256x256 | ~5ms |
-| Encode Q85 | 256x256 | ~8ms |
-| Decode | 1024x768 | ~50ms |
-| Encode Q85 | 1024x768 | ~80ms |
-
-*Note: This is a pure OCaml implementation prioritizing correctness and portability over raw speed.*
 
 ## License
 
@@ -217,8 +268,8 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 ### Development Setup
 
 ```bash
-git clone https://github.com/example/jpeg.git
-cd jpeg
+git clone https://github.com/mtelvers/ocaml-jpeg.git
+cd ocaml-jpeg
 opam install . --deps-only --with-test
 dune build
 dune runtest
@@ -229,3 +280,4 @@ dune runtest
 - JPEG standard: ITU-T T.81 / ISO/IEC 10918-1
 - DCT algorithm based on the AA&N (Arai, Agui, Nakajima) method
 - Standard Huffman tables from the JPEG specification
+- Arithmetic coding based on the MQ-Coder specified in ITU-T T.81

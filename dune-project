@@ -11,7 +11,7 @@
 (package
  (name jpeg)
  (synopsis "Pure OCaml JPEG library")
- (description "A native OCaml library for reading and writing baseline sequential JPEG/JFIF files")
+ (description "A native OCaml library for reading and writing JPEG/JFIF files with no external C dependencies")
  (depends
   (ocaml (>= 4.14))
   (dune (>= 3.0))
